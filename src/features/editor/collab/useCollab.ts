@@ -178,7 +178,22 @@ export function useCollab({
   // delivering, stamped only once the last batch is on the wire.
   const snapshotQueueRef = useRef<Array<{ elements: ExcalidrawElement[]; order?: string[] }>>([]);
   const snapshotTimerRef = useRef<number | null>(null);
-  const snapshotSceneRef = useRef<{ elements: ExcalidrawElement[]; order: string[] } | null>(null);
+  const snapshotSceneRef = useRef<{
+    elements: ExcalidrawElement[];
+    order: string[];
+    /** Ids that actually fit a batch; only these count as delivered. */
+    queuedIds: Set<string>;
+  } | null>(null);
+  // Elements too big for any frame, already reported once.
+  const oversizedWarnedRef = useRef<Set<string>>(new Set());
+
+  /** One warning per oversized element, so the stall is visible but quiet. */
+  const warnOversized = useCallback((elements: readonly ExcalidrawElement[]) => {
+    const fresh = elements.filter((element) => !oversizedWarnedRef.current.has(element.id));
+    if (fresh.length === 0) return;
+    for (const element of fresh) oversizedWarnedRef.current.add(element.id);
+    console.warn(`collab: element too large to sync (${fresh.map((el) => el.id).join(", ")})`);
+  }, []);
 
   /** Sends the next queued batch. A refused frame stays at the front of the
    *  queue and the baseline is left alone, so the next open/flush retries it. */
@@ -197,11 +212,16 @@ export function useCollab({
       snapshotTimerRef.current = window.setTimeout(drainSnapshotQueue, SNAPSHOT_BATCH_GAP_MS);
       return true;
     }
-    // The room now has the whole scene: later deltas can be incremental.
+    // The queue is on the wire: later deltas can be incremental for the
+    // elements it carried. Anything the batcher could not fit stays out of
+    // the baseline, so it is still "not sent" on the next flush.
     const scene = snapshotSceneRef.current;
     snapshotSceneRef.current = null;
     if (scene) {
-      knownRef.current = stampElements(scene.elements);
+      const stamps = stampElements(scene.elements);
+      for (const [id, stamp] of stamps) {
+        if (scene.queuedIds.has(id)) knownRef.current.set(id, stamp);
+      }
       lastOrderRef.current = scene.order;
     }
     return true;
@@ -243,13 +263,24 @@ export function useCollab({
       // the same oversized diff and be skipped forever. Ship it as batches
       // instead; the baseline advances when the queue drains.
       const batches = batchElements(changed);
-      if (batches.length === 0) return;
+      if (batches.length === 0) {
+        // Every element that needs sending is bigger than one frame on its
+        // own. Nothing is delivered, so nothing is stamped; warn once instead
+        // of looping silently on every change.
+        warnOversized(changed);
+        pendingSceneRef.current = null;
+        return;
+      }
       snapshotQueueRef.current = batches.map((batch, index) =>
         index === 0 ? { elements: batch, order } : { elements: batch },
       );
-      // `changed` is derived from `pending.elements`, so the queue covers
-      // the whole pending scene.
-      snapshotSceneRef.current = { elements: [...pending.elements], order };
+      // `changed` is derived from `pending.elements`, so the queue covers the
+      // whole pending scene; only the batched ids become the baseline.
+      snapshotSceneRef.current = {
+        elements: [...pending.elements],
+        order,
+        queuedIds: new Set(batches.flat().map((element) => element.id)),
+      };
       pendingSceneRef.current = null;
       drainSnapshotQueue();
       return;
@@ -276,7 +307,7 @@ export function useCollab({
     knownRef.current = stampElements(pending.elements);
     if (sendOrder) lastOrderRef.current = order;
     for (const id of Object.keys(files)) sentFilesRef.current.add(id);
-  }, [drainSnapshotQueue, send]);
+  }, [drainSnapshotQueue, send, warnOversized]);
 
   // Full-scene answer to a freshly seen peer (see `shouldSendSnapshot`).
   // Stamping `knownRef` from the same scene keeps the regular delta path
@@ -304,13 +335,22 @@ export function useCollab({
       // peer joining a huge board with an empty canvas, so deliver it in
       // budget-sized batches instead (first one now, the rest per tick).
       const batches = batchElements([...elements]);
-      if (batches.length === 0) return;
+      if (batches.length === 0) {
+        // The whole scene is made of frames too large to send: report it and
+        // leave the baseline untouched rather than pretending it shipped.
+        warnOversized(elements);
+        return;
+      }
       snapshotQueueRef.current = batches.map((batch, index) =>
         index === 0 ? { elements: batch, order } : { elements: batch },
       );
       // The baseline advances only when the last batch is on the wire (see
       // `drainSnapshotQueue`); a refused batch is retried, not dropped.
-      snapshotSceneRef.current = { elements: [...elements], order };
+      snapshotSceneRef.current = {
+        elements: [...elements],
+        order,
+        queuedIds: new Set(batches.flat().map((element) => element.id)),
+      };
       // The snapshot covers whatever was pending when it started.
       pendingSceneRef.current = null;
       drainSnapshotQueue();
@@ -338,7 +378,7 @@ export function useCollab({
     if (includeFiles) {
       for (const id of fileIds) sentFilesRef.current.add(id);
     }
-  }, [apiRef, drainSnapshotQueue, send]);
+  }, [apiRef, drainSnapshotQueue, send, warnOversized]);
 
   // Remote scene → local one. Ship our own pending delta first, so an
   // edit made between throttles isn't swallowed by the merge. `knownRef`
@@ -436,6 +476,14 @@ export function useCollab({
           // already succeeded, so anything stamped from that frame is gone.
           // Drop the baseline and re-send the scene through the batch path.
           if (message.message === "too many messages" || message.message === "frame too large") {
+            // A batch queue that was draining counted those frames as sent;
+            // drop it so the retry starts the scene from the beginning.
+            if (snapshotTimerRef.current !== null) {
+              window.clearTimeout(snapshotTimerRef.current);
+              snapshotTimerRef.current = null;
+            }
+            snapshotQueueRef.current = [];
+            snapshotSceneRef.current = null;
             knownRef.current = new Map();
             lastOrderRef.current = [];
             const api = apiRef.current;
@@ -503,6 +551,7 @@ export function useCollab({
     }
     snapshotQueueRef.current = [];
     snapshotSceneRef.current = null;
+    oversizedWarnedRef.current = new Set();
     const elements = api.getSceneElementsIncludingDeleted();
     knownRef.current = stampElements(elements);
     lastOrderRef.current = orderOf(elements);

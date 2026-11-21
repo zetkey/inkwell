@@ -320,6 +320,89 @@ describe("useCollab delta baseline", () => {
     expect(sent[1].elements).toEqual([el]);
   });
 
+  it("never marks an element too large for one frame as delivered", async () => {
+    const huge: Element = { id: "huge", version: 1, text: "x".repeat(3_200_000) };
+    const small: Element = { id: "small", version: 1 };
+    const scene = [huge, small];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const oversizedWarns = () =>
+      warn.mock.calls.filter(([message]) => String(message).includes("too large"));
+
+    await mount([]);
+    await open(socket);
+
+    await act(async () => {
+      notify?.(scene, {});
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    // The small element goes out; the batcher drops the huge one.
+    expect(frames()).toHaveLength(1);
+    expect(frames()[0].elements?.map((element) => element.id)).toEqual(["small"]);
+    expect(oversizedWarns()).toHaveLength(0);
+
+    // The huge element is still unsent: the next flush has nothing that fits
+    // a frame and says so once instead of pretending it was delivered.
+    await act(async () => {
+      notify?.(scene, {});
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(frames()).toHaveLength(1);
+    expect(oversizedWarns()).toHaveLength(1);
+
+    // No retry loop: the same scene warns nothing new and sends nothing.
+    await act(async () => {
+      notify?.(scene, {});
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(frames()).toHaveLength(1);
+    expect(oversizedWarns()).toHaveLength(1);
+
+    warn.mockRestore();
+  });
+
+  it("restarts a snapshot after the server refuses a frame mid-drain", async () => {
+    const big = (id: string): Element => ({ id, version: 1, text: "x".repeat(900_000) });
+    // Two batches: [b1,b2,b3] then [b4].
+    const scene = [big("b1"), big("b2"), big("b3"), big("b4")];
+    await mount(scene);
+    await open(socket);
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          t: "joined",
+          self: { peerId: "me", id: "u1", name: "Me", color: "#000000" },
+          peers: [],
+        }),
+      });
+    });
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          t: "presence",
+          peers: [
+            { peerId: "me", id: "u1", name: "Me", color: "#000000" },
+            { peerId: "p1", id: "u2", name: "Peer", color: "#111111" },
+          ],
+        }),
+      });
+    });
+    expect(frames()).toHaveLength(1);
+
+    // The room refuses a frame while the queue is still draining.
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ t: "error", message: "too many messages" }) });
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    const sent = frames();
+    expect(sent).toHaveLength(2);
+    // The stale queue is gone: the retry starts the scene from the beginning
+    // instead of shipping the leftover batch and stamping the rest.
+    expect(sent[1].elements?.map((element) => element.id)).toEqual(["b1", "b2", "b3"]);
+  });
+
   it("paces snapshot batches instead of bursting them", async () => {
     const big = (id: string): Element => ({ id, version: 1, text: "x".repeat(900_000) });
     // 10 elements -> four 3 MiB batches, sent one per tick.
