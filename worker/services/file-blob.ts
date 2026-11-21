@@ -205,6 +205,18 @@ export async function putFileBlob(env: Env, row: FileRow, req: Request): Promise
     return errorResponse(400, "static-site files are managed via /api/files/:id/assets endpoints");
   }
 
+  // Autosave writes must name the version they loaded: without
+  // `If-Match`, two tabs would silently overwrite each other. 428 (rather
+  // than 400/409) tells the client the request is well-formed but needs a
+  // precondition. Checked before buffering so a header-less client learns
+  // immediately.
+  const ifMatch = req.headers.get("if-match");
+  if (ifMatch === null) {
+    return errorResponse(428, "If-Match required: send the file version you loaded");
+  }
+  const wanted = Number(ifMatch.replace(/^"|"$/g, ""));
+  if (!Number.isInteger(wanted)) return await versionConflict(env, row);
+
   // Refuse an outsized body from its header before buffering it; the
   // byteLength check below still covers chunked/lying clients.
   if (bodyDeclaredTooLarge(req, MAX_FILE_BYTES)) {
@@ -224,24 +236,15 @@ export async function putFileBlob(env: Env, row: FileRow, req: Request): Promise
   const validationError = validateBlobForKind(row.kind, parsed);
   if (validationError) return errorResponse(400, validationError);
 
-  // Optimistic concurrency: an `If-Match` is the version the client's
-  // write is based on. The check lives in the same UPDATE that bumps
-  // the version (see `claimVersion`) — comparing in memory here would
-  // let two concurrent saves both pass and one edit vanish.
-  let expectedVersion: number | undefined;
-  const ifMatch = req.headers.get("if-match");
-  if (ifMatch !== null) {
-    const wanted = Number(ifMatch.replace(/^"|"$/g, ""));
-    if (!Number.isInteger(wanted)) return await versionConflict(env, row);
-    expectedVersion = wanted;
-  }
-
+  // The check lives in the same UPDATE that bumps the version (see
+  // `claimVersion`) — comparing in memory here would let two concurrent
+  // saves both pass and one edit vanish.
   const ts = now();
   // Claim the next version BEFORE writing R2: the loser of a race bails
   // out here with the row untouched, instead of overwriting the winner's
   // blob.
   const nextVersion = await filesRepo.claimVersion(env, row.owner, row.id, {
-    expectedVersion,
+    expectedVersion: wanted,
     sizeBytes: buf.byteLength,
     updatedAt: ts,
   });

@@ -107,7 +107,7 @@ describe("blob cap on every write path", () => {
     const puts: string[] = [];
     const res = await app.request(
       "http://localhost/api/files/f1",
-      { method: "PUT", body: oversized() },
+      { method: "PUT", headers: { "if-match": '"3"' }, body: oversized() },
       fakeEnv(puts),
     );
 
@@ -121,7 +121,7 @@ describe("blob cap on every write path", () => {
     const puts: string[] = [];
     const res = await app.request(
       "http://localhost/api/share/tok",
-      { method: "PUT", body: oversized() },
+      { method: "PUT", headers: { "if-match": '"3"' }, body: oversized() },
       fakeEnv(puts),
     );
 
@@ -151,7 +151,7 @@ describe("blob cap on every write path", () => {
     const puts: string[] = [];
     const res = await app.request(
       "http://localhost/api/share/tok/files/f1",
-      { method: "PUT", body: oversized() },
+      { method: "PUT", headers: { "if-match": '"3"' }, body: oversized() },
       fakeEnv(puts),
     );
 

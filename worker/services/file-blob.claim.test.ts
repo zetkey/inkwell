@@ -96,6 +96,7 @@ describe("putFileBlob version claim", () => {
     const env = fakeEnv(puts);
     const req = new Request("https://inkwell.test/api/files/file-1", {
       method: "PUT",
+      headers: { "if-match": '"3"' },
       body,
     });
 
@@ -107,7 +108,7 @@ describe("putFileBlob version claim", () => {
       env,
       "user-1",
       "file-1",
-      expect.objectContaining({ expectedVersion: undefined }),
+      expect.objectContaining({ expectedVersion: 3 }),
     );
     const json = (await res.json()) as { version: number };
     expect(json.version).toBe(4);
@@ -148,7 +149,11 @@ describe("putFileBlob rollback", () => {
     const res = await putFileBlob(
       env,
       row(),
-      new Request("https://inkwell.test/api/files/file-1", { method: "PUT", body }),
+      new Request("https://inkwell.test/api/files/file-1", {
+        method: "PUT",
+        headers: { "if-match": '"3"' },
+        body,
+      }),
     );
 
     expect(res.status).toBe(200);
@@ -167,7 +172,7 @@ describe("putFileBlob body cap", () => {
     const env = fakeEnv(puts);
     const req = new Request("https://inkwell.test/api/files/file-1", {
       method: "PUT",
-      headers: { "content-length": String(30 * 1024 * 1024) },
+      headers: { "content-length": String(30 * 1024 * 1024), "if-match": '"3"' },
     });
 
     const res = await putFileBlob(env, row(), req);
@@ -187,7 +192,11 @@ describe("putFileBlob body cap", () => {
     const res = await putFileBlob(
       env,
       row(),
-      new Request("https://inkwell.test/api/files/file-1", { method: "PUT", body: oversized }),
+      new Request("https://inkwell.test/api/files/file-1", {
+        method: "PUT",
+        headers: { "if-match": '"3"' },
+        body: oversized,
+      }),
     );
 
     expect(res.status).toBe(413);
@@ -351,5 +360,44 @@ describe("putFileBlob ambiguous put failures", () => {
       "file-1",
       expect.objectContaining({ expectedVersion: 4 }),
     );
+  });
+});
+
+describe("putFileBlob If-Match requirement", () => {
+  it("answers 428 without claiming or writing when the header is missing", async () => {
+    const puts: string[] = [];
+    const env = fakeEnv(puts);
+
+    const res = await putFileBlob(
+      env,
+      row(),
+      new Request("https://inkwell.test/api/files/file-1", { method: "PUT", body }),
+    );
+
+    expect(res.status).toBe(428);
+    expect(await res.json()).toEqual({
+      error: "If-Match required: send the file version you loaded",
+    });
+    expect(mocks.claimVersion).not.toHaveBeenCalled();
+    expect(puts).toEqual([]);
+  });
+
+  it("treats a non-numeric If-Match as a version conflict", async () => {
+    const puts: string[] = [];
+    const env = fakeEnv(puts);
+
+    const res = await putFileBlob(
+      env,
+      row(),
+      new Request("https://inkwell.test/api/files/file-1", {
+        method: "PUT",
+        headers: { "if-match": "not-a-version" },
+        body,
+      }),
+    );
+
+    expect(res.status).toBe(409);
+    expect(mocks.claimVersion).not.toHaveBeenCalled();
+    expect(puts).toEqual([]);
   });
 });
