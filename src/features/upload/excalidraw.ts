@@ -24,8 +24,9 @@ export function parseExcalidrawScene(text: string): ExcalidrawScene | string {
     return "No Excalidraw scene in this file";
   }
   const raw = parsed as Record<string, unknown>;
-  // `type` is absent from Inkwell's own downloads, so only a present and
-  // conflicting value is a rejection.
+  // Only a present and conflicting `type` is a rejection: the tolerant
+  // check also accepts files from older exporters (including older
+  // envelope-free Inkwell downloads) that omit it.
   if (raw.type !== undefined && raw.type !== "excalidraw")
     return "No Excalidraw scene in this file";
   if (!Array.isArray(raw.elements)) return "No elements array";

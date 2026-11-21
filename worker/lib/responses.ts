@@ -8,7 +8,7 @@
 
 import { zipSync } from "fflate";
 import { isStaticSiteBlob, r2StaticSiteAssetKey } from "../services/static-site";
-import type { FileBlob, FileKind, FileRow } from "../types";
+import type { ExcalidrawFileBlob, FileBlob, FileKind, FileRow } from "../types";
 import { assertNever } from "./util";
 
 export function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
@@ -122,6 +122,27 @@ export async function streamFileResponse(
     }
     headers["content-disposition"] =
       `attachment; filename="${safeFilename(row.name)}.${downloadExtensionForKind(row.kind)}"`;
+    if (row.kind === "excalidraw") {
+      // Storage is envelope-free (the editor round-trips
+      // `{elements, appState, files}`), but a `.excalidraw` file must
+      // carry the export envelope: Excalidraw's `isValidExcalidrawData`
+      // requires `type === "excalidraw"` or the import fails.
+      const parsed = (await parseStoredFileBlob(obj)) as ExcalidrawFileBlob | null;
+      if (!parsed || !Array.isArray(parsed.elements)) {
+        return errorResponse(500, "invalid excalidraw blob");
+      }
+      return new Response(
+        JSON.stringify({
+          type: "excalidraw",
+          version: 2,
+          source: "inkwell",
+          elements: parsed.elements,
+          appState: parsed.appState ?? {},
+          files: parsed.files ?? {},
+        }),
+        { headers },
+      );
+    }
     if (row.kind === "drawio") {
       const parsed = await parseStoredFileBlob(obj);
       if (!parsed || !isDrawioBlob(parsed)) return errorResponse(500, "invalid draw.io blob");

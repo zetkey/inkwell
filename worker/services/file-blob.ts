@@ -125,8 +125,9 @@ export function validateBlobForKind(kind: FileKind, parsed: FileBlob): string | 
 // produced, so nothing downstream (download, rename mirroring, share
 // rendering) needs an import-specific branch.
 //
-// Both shapes are accepted, because `GET /api/files/:id/download`
-// hands the user back Inkwell's own envelope-free form.
+// Both shapes are accepted, because imports may also carry files from
+// third-party exporters (and from older Inkwell downloads, which were
+// envelope-free); downloads now hand back a valid export envelope.
 //
 // Returns the canonical blob, or an error message string (mirroring
 // `validateBlobForKind`).
@@ -138,8 +139,9 @@ export function normalizeImportedExcalidraw(
     return "expected a .excalidraw JSON object";
   }
   const raw = parsed as Record<string, unknown>;
-  // `type` is absent from Inkwell's own downloads, so only a *present*
-  // and *conflicting* value is a rejection.
+  // Tolerant on purpose: third-party and older envelope-free files omit
+  // `type`, while downloads now carry it — only a *present conflicting*
+  // value is a rejection.
   if (raw.type !== undefined && raw.type !== "excalidraw") {
     return "not an Excalidraw file";
   }
