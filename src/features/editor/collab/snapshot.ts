@@ -10,6 +10,9 @@
 /** Stay under the 32 MiB frame cap with headroom for the JSON envelope. */
 export const COLLAB_SNAPSHOT_SAFE_BYTES = 24 * 1024 * 1024;
 
+/** One frame of a batched scene snapshot (see `batchElements`). */
+export const COLLAB_SNAPSHOT_BATCH_BYTES = 8 * 1024 * 1024;
+
 const textEncoder = new TextEncoder();
 
 /** JSON size of a message payload in UTF-8 bytes. */
@@ -70,4 +73,61 @@ export function pickFilesForFrame<TFile>(
     filesBytes += size;
   }
   return { files, filesBytes };
+}
+
+export interface DeltaPlan<TFile> {
+  /** Changed elements alone exceed one frame: send nothing and keep the
+   *  pending scene so a later, smaller change can carry the diff. */
+  skip: boolean;
+  elementsBytes: number;
+  /** The not-yet-sent files that fit beside the elements. */
+  files: Record<string, TFile>;
+  filesBytes: number;
+  limit: number;
+}
+
+export function planDelta<TFile>(
+  changed: readonly unknown[],
+  pendingFiles: Record<string, TFile>,
+  limit: number = COLLAB_SNAPSHOT_SAFE_BYTES,
+): DeltaPlan<TFile> {
+  const elementsBytes = jsonBytes(changed);
+  if (elementsBytes > limit) {
+    return { skip: true, elementsBytes, files: {}, filesBytes: 0, limit };
+  }
+  const picked = pickFilesForFrame(pendingFiles, elementsBytes, limit);
+  return {
+    skip: false,
+    elementsBytes,
+    files: picked.files,
+    filesBytes: picked.filesBytes,
+    limit,
+  };
+}
+
+/**
+ * Split a scene into frames that each stay under `limit`. A single element
+ * that cannot fit a frame on its own is dropped: one oversized paste must
+ * not close the socket for everyone. Ordering is preserved.
+ */
+export function batchElements<T>(
+  elements: readonly T[],
+  limit: number = COLLAB_SNAPSHOT_BATCH_BYTES,
+): T[][] {
+  const batches: T[][] = [];
+  let current: T[] = [];
+  let bytes = 2; // "[]"
+  for (const element of elements) {
+    const size = jsonBytes(element) + 1;
+    if (size > limit) continue;
+    if (current.length > 0 && bytes + size > limit) {
+      batches.push(current);
+      current = [];
+      bytes = 2;
+    }
+    current.push(element);
+    bytes += size;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
 }

@@ -6,7 +6,7 @@
 // must-survive markup that keeps a thumbnail looking right.
 
 import { describe, expect, it } from "vitest";
-import { sanitizeSvg } from "./drawioSanitize";
+import { MAX_THUMB_SVG_CHARS, sanitizeSvg, thumbSvgToUpload } from "./drawioSanitize";
 
 const NORMAL_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60" viewBox="0 0 120 60"><rect x="1" y="2" width="10" height="10" fill="#e03131"/><text x="4" y="20" font-family="Helvetica">Hi</text></svg>';
@@ -115,5 +115,26 @@ describe("sanitizeSvg", () => {
 
   it("uploads nothing for a broken document", () => {
     expect(sanitizeSvg("<svg><rect></svg>")).toBe("");
+  });
+});
+
+describe("thumbSvgToUpload", () => {
+  it("returns the sanitized markup for a normal export", () => {
+    const clean = thumbSvgToUpload(NORMAL_SVG);
+
+    expect(clean).not.toBeNull();
+    expect(clean).toContain('viewBox="0 0 120 60"');
+  });
+
+  it("uploads nothing for an empty export", () => {
+    expect(thumbSvgToUpload("")).toBeNull();
+  });
+
+  it("uploads nothing for an oversized export", () => {
+    expect(thumbSvgToUpload("x".repeat(MAX_THUMB_SVG_CHARS + 1))).toBeNull();
+  });
+
+  it("uploads nothing for a broken export", () => {
+    expect(thumbSvgToUpload("<svg><rect></svg>")).toBeNull();
   });
 });

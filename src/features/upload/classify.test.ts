@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { classifyName, isJunkPath, MAX_UPLOAD_BYTES, planEntries, sniffMatches } from "./classify";
+import {
+  classifyName,
+  isJunkPath,
+  MAX_SITE_TOTAL_BYTES,
+  MAX_UPLOAD_BYTES,
+  planEntries,
+  sniffMatches,
+} from "./classify";
 import type { DroppedEntry } from "./types";
 
 function entry(relativePath: string, content = "x", size?: number): DroppedEntry {
@@ -134,5 +141,34 @@ describe("planEntries", () => {
       ["notes", "top", "x"],
       ["static-site", "top", "inner"],
     ]);
+  });
+});
+
+describe("upload limits mirror the worker", () => {
+  it("caps a loose file at the 4 MiB blob limit", () => {
+    const [ok] = planEntries([entry("ok.md", "x", MAX_UPLOAD_BYTES)]);
+    const [big] = planEntries([entry("big.md", "x", MAX_UPLOAD_BYTES + 1)]);
+
+    expect(ok.reason).toBeUndefined();
+    expect(big.reason).toMatch(/Too large .*limit 4\.0 MB/);
+  });
+
+  it("caps a zip upload at the 25 MiB site total", () => {
+    const [ok] = planEntries([entry("site.zip", "x", MAX_SITE_TOTAL_BYTES)]);
+    const [big] = planEntries([entry("site.zip", "x", MAX_SITE_TOTAL_BYTES + 1)]);
+
+    expect(ok.reason).toBeUndefined();
+    expect(big.reason).toMatch(/limit 25\.0 MB/);
+  });
+
+  it("uses the per-asset limit inside a directory site, not the blob limit", () => {
+    const [one] = planEntries([entry("site/index.html", "x", 10 * 1024 * 1024)]);
+    expect(one.reason).toBeUndefined();
+
+    const [tooBig] = planEntries([
+      entry("site/index.html", "x", 24 * 1024 * 1024),
+      entry("site/app.css", "x", 2 * 1024 * 1024),
+    ]);
+    expect(tooBig.reason).toMatch(/Site too large/);
   });
 });

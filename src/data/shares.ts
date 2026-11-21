@@ -101,7 +101,8 @@ export function useSharedFile(token: string, fileId?: string) {
     queryFn: () => (fileId ? shares.loadFolderFile(token, fileId) : shares.load(token)),
     enabled: !!token,
     retry: false,
+    // Same windowing as the owner editor: no refetch, but not pinned forever.
     staleTime: Infinity,
-    gcTime: Infinity,
+    gcTime: 5 * 60_000,
   });
 }

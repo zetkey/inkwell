@@ -32,7 +32,7 @@ import type { DrawioFileBlob, FileBlob, LoadedFile } from "@/lib/api/client";
 import { useDrawioStyle } from "@/lib/preferences";
 import { type ResolvedTheme, useTheme } from "@/lib/theme";
 import { DrawioSidebarToggles } from "./DrawioSidebarToggles";
-import { sanitizeSvg } from "./drawioSanitize";
+import { thumbSvgToUpload } from "./drawioSanitize";
 import type { EditorHeaderBridge, RenderEditorHeader } from "./editorHeaderBridge";
 import { LeaveConfirmDialog } from "./lifecycle/LeaveConfirmDialog";
 import { useDebounced } from "./lifecycle/useDebounced";
@@ -510,12 +510,16 @@ export default function DrawioEditor({
         if (!svg) return;
         const fp = hashXml(expectedXml);
         if (fp === thumbFpRef.current) return;
+        // A blank or oversized export would replace a good thumbnail with
+        // nothing: skip it and keep what the server already has.
+        const clean = thumbSvgToUpload(svg);
+        if (!clean) return;
         // Optimistically mark the fingerprint as shipped so concurrent
         // saves don't queue a duplicate while the PUT is in flight.
         // Roll it back if the PUT fails.
         const previousFp = thumbFpRef.current;
         thumbFpRef.current = fp;
-        void saveThumb(sanitizeSvg(svg))
+        void saveThumb(clean)
           .then(() => onThumbSaved?.())
           .catch(() => {
             thumbFpRef.current = previousFp;

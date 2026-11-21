@@ -42,7 +42,7 @@ import type {
   RemoteElementsMessage,
   ServerMessage,
 } from "./protocol";
-import { jsonBytes, pickFilesForFrame, planSnapshot } from "./snapshot";
+import { batchElements, planDelta, planSnapshot } from "./snapshot";
 
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 10_000;
@@ -127,9 +127,18 @@ export function useCollab({
   const cursorTimerRef = useRef<number | null>(null);
   const pendingCursorRef = useRef<PointerUpdatePayload | null>(null);
 
-  const send = useCallback((message: ClientMessage) => {
+  /** Returns whether the frame actually went out; callers only advance
+   *  their baselines (`knownRef`, `sentFilesRef`) on `true`. */
+  const send = useCallback((message: ClientMessage): boolean => {
     const socket = socketRef.current;
-    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+    if (socket?.readyState !== WebSocket.OPEN) return false;
+    try {
+      socket.send(JSON.stringify(message));
+      return true;
+    } catch {
+      // Closed between the readyState check and the call.
+      return false;
+    }
   }, []);
 
   const pushCollaborators = useCallback(() => {
@@ -166,7 +175,6 @@ export function useCollab({
     // Offline: keep the pending snapshot (and `knownRef`) untouched so the
     // next change after reconnect still has something to ship.
     if (socketRef.current?.readyState !== WebSocket.OPEN) return;
-    pendingSceneRef.current = null;
 
     const changed = changedElements(knownRef.current, pending.elements);
     const order = orderOf(pending.elements);
@@ -182,26 +190,57 @@ export function useCollab({
     // later, smaller frame can deliver it.
     // shortcut: the `order` list is not measured; it is ids only and the
     // 24 MiB budget leaves 8 MiB of headroom under the 32 MiB cap.
-    const files =
-      Object.keys(pendingFiles).length === 0
-        ? {}
-        : pickFilesForFrame(pendingFiles, jsonBytes(changed)).files;
+    const plan = planDelta(changed, pendingFiles);
+    // One paste can be bigger than a frame on its own: send nothing and keep
+    // the pending scene, so the next, smaller change ships the diff.
+    if (plan.skip) return;
+    const files = plan.files;
 
-    if (changed.length === 0 && !sendOrder && Object.keys(files).length === 0) return;
-
-    knownRef.current = stampElements(pending.elements);
-    if (sendOrder) lastOrderRef.current = order;
+    if (changed.length === 0 && !sendOrder && Object.keys(files).length === 0) {
+      pendingSceneRef.current = null;
+      return;
+    }
 
     const message: ElementsMessage = { t: "elements", elements: changed };
+    if (sendOrder) message.order = order;
     // shortcut: images ride inline in a single text frame, so one very large
     // pasted screenshot can exceed the endpoint's frame limit; upgrade to a
     // chunked/blob upload if users hit that cap.
-    if (Object.keys(files).length > 0) {
-      message.files = files;
-      for (const id of Object.keys(files)) sentFilesRef.current.add(id);
+    if (Object.keys(files).length > 0) message.files = files;
+
+    // Only a delivered frame may advance the baseline; a failed send is
+    // retried with the same content on the next flush.
+    if (!send(message)) return;
+
+    pendingSceneRef.current = null;
+    knownRef.current = stampElements(pending.elements);
+    if (sendOrder) lastOrderRef.current = order;
+    for (const id of Object.keys(files)) sentFilesRef.current.add(id);
+  }, [send]);
+
+  // Scene frames left over when the whole scene cannot fit one frame; each
+  // drains on its own tick.
+  const snapshotQueueRef = useRef<Array<{ elements: ExcalidrawElement[]; order?: string[] }>>([]);
+  const snapshotTimerRef = useRef<number | null>(null);
+
+  /** Sends the next queued batch; false once the socket refuses one. */
+  const drainSnapshotQueue = useCallback((): boolean => {
+    snapshotTimerRef.current = null;
+    const batch = snapshotQueueRef.current.shift();
+    if (!batch) return true;
+    const delivered = send({
+      t: "elements",
+      elements: batch.elements,
+      ...(batch.order ? { order: batch.order } : {}),
+    });
+    if (!delivered) {
+      snapshotQueueRef.current = [];
+      return false;
     }
-    if (sendOrder) message.order = order;
-    send(message);
+    if (snapshotQueueRef.current.length > 0) {
+      snapshotTimerRef.current = window.setTimeout(drainSnapshotQueue, 0);
+    }
+    return true;
   }, [send]);
 
   // Full-scene answer to a freshly seen peer (see `shouldSendSnapshot`).
@@ -215,29 +254,51 @@ export function useCollab({
     const files = api.getFiles();
     const fileIds = Object.keys(files);
     const plan = planSnapshot(elements, files);
-    // Geometry alone does not fit one frame (a per-element delta of the same
-    // scene would not either): send nothing rather than kill the socket.
-    if (plan.skip) return;
-    knownRef.current = stampElements(elements);
-    lastOrderRef.current = order;
-    // Pending edits are part of this snapshot; a stale delta must not follow.
-    pendingSceneRef.current = null;
+
+    if (plan.skip) {
+      // Geometry alone cannot fit one frame. Going silent would leave a
+      // peer joining a huge board with an empty canvas, so deliver it in
+      // budget-sized batches instead (first one now, the rest per tick).
+      if (snapshotTimerRef.current !== null) {
+        window.clearTimeout(snapshotTimerRef.current);
+        snapshotTimerRef.current = null;
+      }
+      const batches = batchElements([...elements]);
+      if (batches.length === 0) return;
+      snapshotQueueRef.current = batches.map((batch, index) =>
+        index === 0 ? { elements: batch, order } : { elements: batch },
+      );
+      // The baseline only advances once the first frame is on the wire; the
+      // rest drain in the background and later deltas stay incremental.
+      if (!drainSnapshotQueue()) return;
+      knownRef.current = stampElements(elements);
+      lastOrderRef.current = order;
+      pendingSceneRef.current = null;
+      return;
+    }
+
     // shortcut: inline base64 images dominate the frame (32 MiB cap). Above
     // the 24 MiB budget the snapshot ships geometry only and leaves the
     // files un-sent, so the next delta delivers them in budget-sized
     // batches — until then a peer keeps whatever images it already had.
     // Upgrade to chunked image transfer if live delivery on join matters.
     const includeFiles = fileIds.length > 0 && plan.includeFiles;
-    if (includeFiles) {
-      for (const id of fileIds) sentFilesRef.current.add(id);
-    }
-    send({
+    const delivered = send({
       t: "elements",
       elements: [...elements],
       order,
       ...(includeFiles ? { files } : {}),
     });
-  }, [apiRef, send]);
+    if (!delivered) return;
+
+    knownRef.current = stampElements(elements);
+    lastOrderRef.current = order;
+    // Pending edits are part of this snapshot; a stale delta must not follow.
+    pendingSceneRef.current = null;
+    if (includeFiles) {
+      for (const id of fileIds) sentFilesRef.current.add(id);
+    }
+  }, [apiRef, drainSnapshotQueue, send]);
 
   // Remote scene → local one. Ship our own pending delta first, so an
   // edit made between throttles isn't swallowed by the merge. `knownRef`
@@ -443,6 +504,7 @@ export function useCollab({
     return () => {
       disposed = true;
       if (retryTimer !== null) window.clearTimeout(retryTimer);
+      snapshotQueueRef.current = [];
       socket?.close();
       socket = null;
       socketRef.current = null;
@@ -475,6 +537,7 @@ export function useCollab({
     return () => {
       if (deltaTimerRef.current !== null) window.clearTimeout(deltaTimerRef.current);
       if (cursorTimerRef.current !== null) window.clearTimeout(cursorTimerRef.current);
+      if (snapshotTimerRef.current !== null) window.clearTimeout(snapshotTimerRef.current);
     };
   }, []);
 

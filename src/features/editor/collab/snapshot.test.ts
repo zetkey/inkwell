@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { COLLAB_SNAPSHOT_SAFE_BYTES, pickFilesForFrame, planSnapshot } from "./snapshot";
+import {
+  batchElements,
+  COLLAB_SNAPSHOT_SAFE_BYTES,
+  pickFilesForFrame,
+  planDelta,
+  planSnapshot,
+} from "./snapshot";
 
 const utf8 = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 
@@ -81,5 +87,51 @@ describe("pickFilesForFrame", () => {
     const pending = { a: { dataURL: "a".repeat(100) }, b: { dataURL: "b".repeat(100) } };
 
     expect(Object.keys(pickFilesForFrame(pending, 10, 1_000).files)).toEqual(["a", "b"]);
+  });
+});
+
+describe("planDelta", () => {
+  it("sends nothing when the changed elements alone exceed the budget", () => {
+    const changed = [{ id: "paste", text: "é".repeat(600) }];
+    const plan = planDelta(changed, { "file-1": { dataURL: "x" } }, 1_000);
+
+    expect(plan.skip).toBe(true);
+    expect(plan.elementsBytes).toBeGreaterThan(1_000);
+    // No files are even considered: the caller must keep its baseline.
+    expect(plan.files).toEqual({});
+  });
+
+  it("picks the files that fit beside the changed elements", () => {
+    const files = {
+      big: { dataURL: "a".repeat(995) },
+      small: { dataURL: "b".repeat(10) },
+    };
+    const plan = planDelta([{ id: "a" }], files, 1_000);
+
+    expect(plan.skip).toBe(false);
+    expect(Object.keys(plan.files)).toEqual(["small"]);
+  });
+});
+
+describe("batchElements", () => {
+  const el = (id: string, text = "") => ({ id, text });
+
+  it("splits a scene into frames under the limit", () => {
+    const batches = batchElements(
+      [el("a", "x".repeat(400)), el("b", "x".repeat(400)), el("c")],
+      500,
+    );
+
+    expect(batches.map((batch) => batch.map((e) => e.id))).toEqual([["a"], ["b", "c"]]);
+  });
+
+  it("drops an element that cannot fit a frame on its own", () => {
+    const batches = batchElements([el("huge", "x".repeat(2_000)), el("ok")], 500);
+
+    expect(batches).toEqual([[el("ok")]]);
+  });
+
+  it("keeps one frame when everything fits", () => {
+    expect(batchElements([el("a"), el("b")], 1_000)).toEqual([[el("a"), el("b")]]);
   });
 });

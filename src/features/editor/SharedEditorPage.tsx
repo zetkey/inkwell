@@ -59,6 +59,20 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
     if (fileQuery.data) setLoaded(fileQuery.data);
   }, [fileQuery.data, loaded]);
 
+  // Folder-share routes reuse this page for another file; clear the working
+  // copy on a real transition so the seed effect above loads the new one and
+  // the editor remounts instead of showing the previous file.
+  const prevFileIdRef = useRef<string | null>(fileId ?? null);
+  useEffect(() => {
+    const next = fileId ?? null;
+    if (prevFileIdRef.current !== null && prevFileIdRef.current !== next) {
+      setLoaded(null);
+      setConflict(false);
+      setEditorKey((k) => k + 1);
+    }
+    prevFileIdRef.current = next;
+  }, [fileId]);
+
   const loadedRef = useRef(loaded);
   loadedRef.current = loaded;
   // Sticky id of the last real working copy (see `saveTarget`): the route

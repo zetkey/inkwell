@@ -90,3 +90,16 @@ export function sanitizeSvg(svg: string): string {
 
   return new XMLSerializer().serializeToString(doc);
 }
+
+/** Thumbnails above this are not worth parsing or storing. */
+export const MAX_THUMB_SVG_CHARS = 2_000_000;
+
+/**
+ * The SVG to upload as a thumbnail, or null when there is nothing worth
+ * storing: an empty export, an absurdly large one, or one that does not
+ * parse. A skipped export keeps the previous thumbnail in place.
+ */
+export function thumbSvgToUpload(svg: string): string | null {
+  if (!svg || svg.length > MAX_THUMB_SVG_CHARS) return null;
+  return sanitizeSvg(svg) || null;
+}

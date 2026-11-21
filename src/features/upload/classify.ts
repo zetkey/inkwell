@@ -19,10 +19,12 @@ import type { FileKind } from "@/lib/api/client";
 import { stripExtension } from "./naming";
 import type { DroppedEntry, PlannedJob, SiteSource } from "./types";
 
-/** Mirrors `MAX_FILE_BYTES` / `MAX_SITE_ASSET_BYTES` in the worker. */
-export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+/** Mirrors the worker's `MAX_FILE_BYTES` (blob PUT): 4 MiB. */
+export const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+/** Mirrors `MAX_SITE_ASSET_BYTES`: one file inside a static site. */
+export const MAX_SITE_ASSET_BYTES = 25 * 1024 * 1024;
 /** Mirrors `MAX_SITE_TOTAL_BYTES` (a .zip or a whole directory site). */
-export const MAX_SITE_TOTAL_BYTES = 100 * 1024 * 1024;
+export const MAX_SITE_TOTAL_BYTES = 25 * 1024 * 1024;
 /** Mirrors `MAX_SITE_ASSET_COUNT`. */
 export const MAX_SITE_FILES = 500;
 
@@ -167,10 +169,10 @@ function planSite(node: DirNode, dirPath: string[]): PlannedJob {
     entries,
     site: "dir",
   };
-  const big = entries.find((e) => e.file.size > MAX_UPLOAD_BYTES);
+  const big = entries.find((e) => e.file.size > MAX_SITE_ASSET_BYTES);
   const total = entries.reduce((n, e) => n + e.file.size, 0);
   if (big) {
-    job.reason = `${big.relativePath} is too large (limit ${formatMb(MAX_UPLOAD_BYTES)})`;
+    job.reason = `${big.relativePath} is too large (limit ${formatMb(MAX_SITE_ASSET_BYTES)})`;
   } else if (total > MAX_SITE_TOTAL_BYTES) {
     job.reason = `Site too large (${formatMb(total)}, limit ${formatMb(MAX_SITE_TOTAL_BYTES)})`;
   } else if (entries.length > MAX_SITE_FILES) {

@@ -39,8 +39,10 @@ export function useFile(id: string) {
     queryFn: () => files.load(id),
     enabled: !!id,
     retry: false,
-    // Editor owns the working copy after first arrival.
+    // Editor owns the working copy after first arrival. The cache is kept
+    // only while the editor is likely open (5 min) so a long session cannot
+    // pin every scene it visited in memory.
     staleTime: Infinity,
-    gcTime: Infinity,
+    gcTime: 5 * 60_000,
   });
 }
