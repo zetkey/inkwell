@@ -174,6 +174,8 @@ export function EditorPage() {
   // `loaded` instead). Remount so the canvas — and the collab hook's
   // baseline — match the fresh server version.
   const remountAfterConflict = useCallback((ls: LoadedFile) => {
+    // The conflict may belong to a file the route already left.
+    if (loadedRef.current?.meta.id !== ls.meta.id) return;
     setLoaded(ls);
     setEditorKey((k) => k + 1);
   }, []);
@@ -186,8 +188,11 @@ export function EditorPage() {
       queryFn: () => files.load(id),
       staleTime: 0,
     });
-    setLoaded(ls);
-    setConflict(true);
+    // The lifecycle still gets `ls`, but the working copy is only replaced
+    // when it still belongs to this file — a reload that lands after the
+    // route moved on must not overwrite the new file.
+    setLoaded((prev) => (prev && prev.meta.id === id ? ls : prev));
+    if (loadedRef.current?.meta.id === id) setConflict(true);
     return ls;
   }, [qc, id]);
 

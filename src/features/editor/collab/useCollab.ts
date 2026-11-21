@@ -42,6 +42,7 @@ import type {
   RemoteElementsMessage,
   ServerMessage,
 } from "./protocol";
+import { planSnapshot } from "./snapshot";
 
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 10_000;
@@ -203,19 +204,25 @@ export function useCollab({
     const elements = api.getSceneElementsIncludingDeleted();
     const order = orderOf(elements);
     const files = api.getFiles();
+    const fileIds = Object.keys(files);
+    const plan = planSnapshot(elements, files);
     knownRef.current = stampElements(elements);
     lastOrderRef.current = order;
-    for (const id of Object.keys(files)) sentFilesRef.current.add(id);
+    // Marked as sent even when the payload had to drop them: retrying on
+    // the next delta would only repeat an oversized frame.
+    for (const id of fileIds) sentFilesRef.current.add(id);
     // Pending edits are part of this snapshot; a stale delta must not follow.
     pendingSceneRef.current = null;
-    // shortcut: whole scene plus every image (inline base64) in one frame —
-    // image-heavy boards can approach the endpoint's frame limit; upgrade to
-    // chunked snapshots if that happens.
+    // shortcut: inline base64 images dominate the frame (32 MiB cap), so
+    // above the 24 MiB safe budget the snapshot ships geometry only; a
+    // peer that joins now keeps whatever images it already had until it
+    // reloads the file. Upgrade to chunked image transfer if live image
+    // delivery on join becomes required.
     send({
       t: "elements",
       elements: [...elements],
       order,
-      ...(Object.keys(files).length > 0 ? { files } : {}),
+      ...(fileIds.length > 0 && plan.includeFiles ? { files } : {}),
     });
   }, [apiRef, send]);
 

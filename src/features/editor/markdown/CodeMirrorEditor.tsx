@@ -23,6 +23,10 @@ import { useEffect, useRef } from "react";
 
 interface CodeMirrorEditorProps {
   value: string;
+  /** Bumped when `value` becomes a new document (file switch / 409
+   *  reload). Ordinary `value` updates are echoes of the host's debounced
+   *  edits and must not rewind the doc. */
+  resetKey: number;
   onChange: (value: string) => void;
   readOnly: boolean;
   dark: boolean;
@@ -129,6 +133,7 @@ function editorTheme(dark: boolean, fontFamily: string) {
 
 export function CodeMirrorEditor({
   value,
+  resetKey,
   onChange,
   readOnly,
   dark,
@@ -137,6 +142,9 @@ export function CodeMirrorEditor({
   const hostRef = useRef<HTMLElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const appliedResetRef = useRef(resetKey);
   const suppressChangeRef = useRef(false);
   const editable = useRef(new Compartment()).current;
   const theme = useRef(new Compartment()).current;
@@ -215,13 +223,19 @@ export function CodeMirrorEditor({
     });
   }, [dark, fontFamily, theme]);
 
+  // The host debounces `value`, so it trails this view's doc while the
+  // user types; applying every prop update would rewind the caret and
+  // drop keystrokes. Only an explicit document reset applies it.
   useEffect(() => {
+    if (appliedResetRef.current === resetKey) return;
+    appliedResetRef.current = resetKey;
     const view = viewRef.current;
-    if (!view || view.state.doc.toString() === value) return;
+    const next = valueRef.current;
+    if (!view || view.state.doc.toString() === next) return;
     suppressChangeRef.current = true;
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: next } });
     suppressChangeRef.current = false;
-  }, [value]);
+  }, [resetKey]);
 
   return <section ref={hostRef} className="h-full min-h-0" aria-label="Markdown source editor" />;
 }

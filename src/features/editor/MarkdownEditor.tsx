@@ -15,6 +15,7 @@ import {
   notesBlobToMarkdown,
 } from "./markdown/compat";
 import { MarkdownPreview } from "./markdown/MarkdownPreview";
+import { type MarkdownSnapshot, MarkdownSync } from "./markdown/markdownSync";
 import { markdownToThumbSvg } from "./markdown/thumb";
 import { loadNotesFont } from "./notes/fontLoader";
 import { fontStack, useNotesPreferences, widthMaxClass } from "./notes/preferences";
@@ -54,12 +55,44 @@ export default function MarkdownEditor({
   const { width, font, layout } = useNotesPreferences();
   const selectedFont = fontStack(font);
   const initialFingerprint = fingerprintMarkdown(canonical ?? "");
-  const latestRef = useRef({ source: canonical ?? "", fp: initialFingerprint });
   // Blob produced by our own last save. The parent stores that object in
   // `loaded.blob`; re-seeding from it would rewind CodeMirror while the
   // user keeps typing.
   const ownBlobRef = useRef<FileBlob | null>(null);
   const thumb = useThumbPipeline({ saveThumb, onThumbSaved, readOnly });
+
+  // Typing only records the newest text; the fingerprint, the preview
+  // re-render and the save notification are debounced (see `MarkdownSync`).
+  const flushRef = useRef<(snapshot: MarkdownSnapshot) => void>(() => {});
+  const syncRef = useRef<MarkdownSync | null>(null);
+  if (syncRef.current === null) {
+    syncRef.current = new MarkdownSync({
+      initial: { source: canonical ?? "", fp: initialFingerprint },
+      fingerprint: fingerprintMarkdown,
+      onFlush: (snapshot) => flushRef.current(snapshot),
+    });
+  }
+  const sync = syncRef.current;
+
+  // Registered before the save lifecycle so these run first on unmount /
+  // tab close: the flush reports the newest text while the lifecycle can
+  // still schedule the save (afterwards it has already stopped). Without
+  // this, continuous typing never crosses the debounce window and the
+  // keyboard-only path to the server (beforeunload) would miss it.
+  useEffect(() => {
+    const flush = () => sync.flush();
+    window.addEventListener("beforeunload", flush);
+    document.addEventListener("visibilitychange", flush);
+    return () => {
+      window.removeEventListener("beforeunload", flush);
+      document.removeEventListener("visibilitychange", flush);
+      sync.dispose();
+    };
+  }, [sync]);
+
+  // Bumped when a fresh document is loaded so CodeMirror applies it even
+  // though `source` normally trails the editor's own doc.
+  const [resetNonce, setResetNonce] = useState(0);
 
   const lifecycle = useSaveLifecycle<FileBlob, LoadedFile>({
     initialVersion: loaded.meta.version,
@@ -67,7 +100,7 @@ export default function MarkdownEditor({
     readOnly,
     transport: { save, reload },
     getLatest: () => {
-      const latest = latestRef.current;
+      const latest = sync.read();
       return {
         fp: latest.fp,
         blob: {
@@ -87,6 +120,10 @@ export default function MarkdownEditor({
 
   const lifecycleRef = useRef(lifecycle);
   lifecycleRef.current = lifecycle;
+  flushRef.current = (snapshot) => {
+    setSource(snapshot.source);
+    lifecycleRef.current.notifyChange();
+  };
   const thumbRef = useRef(thumb);
   thumbRef.current = thumb;
   const loadedVersionRef = useRef(loaded.meta.version);
@@ -101,8 +138,9 @@ export default function MarkdownEditor({
       .then((markdown) => {
         if (cancelled) return;
         const fp = fingerprintMarkdown(markdown);
-        latestRef.current = { source: markdown, fp };
+        sync.reset({ source: markdown, fp });
         setSource(markdown);
+        setResetNonce((n) => n + 1);
         thumbRef.current.reset();
         lifecycleRef.current.reset(loadedVersionRef.current, fp);
       })
@@ -119,28 +157,34 @@ export default function MarkdownEditor({
     };
     // Our own save swaps the blob reference too; that case is skipped
     // above so it can't overwrite unsaved CodeMirror state.
-  }, [loaded.blob]);
+  }, [loaded.blob, sync]);
 
   useEffect(() => {
     void loadNotesFont(font);
   }, [font]);
 
+  // One transaction: record the text only. The debounced flush mirrors it
+  // into React state and notifies the save lifecycle.
   const handleChange = useCallback(
     (next: string) => {
-      const fp = fingerprintMarkdown(next);
-      latestRef.current = { source: next, fp };
-      setSource(next);
-      lifecycle.notifyChange();
+      sync.push(next);
     },
-    [lifecycle],
+    [sync],
   );
+
+  // Discard must also drop the un-reported window, or the unmount flush
+  // would hand the discarded text to the save lifecycle.
+  const discardPendingLocalWork = useCallback(() => {
+    sync.discard();
+    lifecycleRef.current.discardPendingLocalWork();
+  }, [sync]);
 
   const leave = useLeaveConfirm({
     isDirty: lifecycle.isDirty,
     saveNow: lifecycle.saveNow,
-    discardPendingLocalWork: lifecycle.discardPendingLocalWork,
+    discardPendingLocalWork,
   });
-  const { saveNow, discardPendingLocalWork } = lifecycle;
+  const { saveNow } = lifecycle;
   const { requestLeave } = leave;
   const bridge = useMemo<EditorHeaderBridge>(
     () => ({
@@ -187,6 +231,7 @@ export default function MarkdownEditor({
               <div className={cn("mx-auto h-full w-full", widthMaxClass(width))}>
                 <CodeMirrorEditor
                   value={source}
+                  resetKey={resetNonce}
                   onChange={handleChange}
                   readOnly={readOnly}
                   dark={resolved === "dark"}

@@ -32,6 +32,7 @@ import type { DrawioFileBlob, FileBlob, LoadedFile } from "@/lib/api/client";
 import { useDrawioStyle } from "@/lib/preferences";
 import { type ResolvedTheme, useTheme } from "@/lib/theme";
 import { DrawioSidebarToggles } from "./DrawioSidebarToggles";
+import { sanitizeSvg } from "./drawioSanitize";
 import type { EditorHeaderBridge, RenderEditorHeader } from "./editorHeaderBridge";
 import { LeaveConfirmDialog } from "./lifecycle/LeaveConfirmDialog";
 import type { EditorSaveStatus } from "./lifecycle/types";
@@ -518,7 +519,7 @@ export default function DrawioEditor({
         // Roll it back if the PUT fails.
         const previousFp = thumbFpRef.current;
         thumbFpRef.current = fp;
-        void saveThumb(svg)
+        void saveThumb(sanitizeSvg(svg))
           .then(() => onThumbSaved?.())
           .catch(() => {
             thumbFpRef.current = previousFp;

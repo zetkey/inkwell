@@ -72,20 +72,25 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
     };
   }, []);
 
+  const loadedRef = useRef(loaded);
+  loadedRef.current = loaded;
+
   // Force-fresh reload after a 409 conflict.
   const reload = useCallback(async () => {
+    const activeId = loadedRef.current?.meta.id ?? null;
     const ls = await qc.fetchQuery({
       queryKey: keys.publicShare.token(token, fileId),
       queryFn: () => (fileId ? shares.loadFolderFile(token, fileId) : shares.load(token)),
       staleTime: 0,
     });
-    setLoaded(ls);
-    setConflict(true);
+    // The lifecycle still gets `ls`; the working copy is only replaced
+    // when it is still the file this reload was for.
+    if (activeId !== null && loadedRef.current?.meta.id === activeId) {
+      setLoaded(ls);
+      setConflict(true);
+    }
     return ls;
   }, [qc, token, fileId]);
-
-  const loadedRef = useRef(loaded);
-  loadedRef.current = loaded;
   const save = useCallback(
     async (version: number, blob: FileBlob) => {
       const savingId = loadedRef.current?.meta.id ?? null;
@@ -126,6 +131,8 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
   // Excalidraw only reads `initialData` on mount; remount after a 409
   // reload so the canvas and the collab baseline match the fresh scene.
   const remountAfterConflict = useCallback((ls: LoadedFile) => {
+    // The conflict may belong to a file the visitor already left.
+    if (loadedRef.current?.meta.id !== ls.meta.id) return;
     setLoaded(ls);
     setEditorKey((k) => k + 1);
   }, []);
