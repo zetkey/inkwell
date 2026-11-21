@@ -156,8 +156,28 @@ pnpm dev                           # vite
 
 # 5. Deploy
 pnpm drawio:assets               # ensure ./public/drawio exists before building
-pnpm deploy
+pnpm run deploy                  # NB: bare `pnpm deploy` hits pnpm's builtin
 ```
+
+### Automatic deploys (GitHub Actions)
+
+[`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml) ships every
+push to `main` (or a manual dispatch from the Actions tab): install,
+`pnpm check:ci`, `pnpm test`, `pnpm drawio:assets`, `pnpm build`, then
+`wrangler deploy`.
+
+Add both credentials as repository secrets on `zetkey/inkwell`:
+
+```bash
+gh secret set CLOUDFLARE_API_TOKEN     # Workers Scripts:Edit, Workers R2 Storage:Edit, D1:Edit, Workers Routes:Edit, Zone:Read
+gh secret set CLOUDFLARE_ACCOUNT_ID    # `pnpm exec wrangler whoami` prints the account id
+```
+
+Create the token in the Cloudflare dashboard → *My Profile* → *API Tokens* →
+the **Edit Cloudflare Workers** template.
+
+Production D1 migrations are **not** part of the deploy — run
+`pnpm db:migrate:remote` before pushing a Worker that needs new columns.
 
 For local dev, copy `.dev.vars.example` to `.dev.vars` and adjust. The
 super-admin row is created lazily on the first login attempt that matches
@@ -195,7 +215,7 @@ it:
 pnpm db:migrate:local                                   # try it locally first
 wrangler d1 export inkwell --remote --output backup-$(date +%F).sql
 pnpm db:migrate:remote
-pnpm deploy                                             # new Worker needs the new columns
+pnpm run deploy                                         # new Worker needs the new columns
 ```
 
 Apply the migration **before** deploying the new Worker. The old Worker
