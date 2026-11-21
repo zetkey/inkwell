@@ -396,9 +396,15 @@ export function useCollab({
       try {
         const baseline = knownRef.current;
         const localBefore = api.getSceneElementsIncludingDeleted();
-        // Elements the room has never received (a skipped delta, an offline
-        // edit): merging a peer's frame must not make them look delivered.
-        const neverSent = localBefore.filter((element) => !baseline.has(element.id));
+        // Compare stamps, not ids: an element that was delivered earlier (the
+        // baseline has an older stamp) but has since grown past a frame is
+        // still *pending*, and merging a peer frame must not make it look
+        // delivered just because its id is in the baseline.
+        const localStamps = stampElements(localBefore);
+        const pendingLocal = localBefore.filter(
+          (element) => baseline.get(element.id) !== localStamps.get(element.id),
+        );
+        const carried = new Set(message.elements.map((element) => element.id));
         const merged = mergeRemoteElements(
           localBefore,
           message.elements,
@@ -406,7 +412,15 @@ export function useCollab({
           message.order,
         );
         const stamps = stampElements(merged);
-        for (const element of neverSent) stamps.delete(element.id);
+        for (const element of pendingLocal) {
+          // The peer sent this id: the room has a copy, so the merge result
+          // is what everyone can agree on.
+          if (carried.has(element.id)) continue;
+          stamps.delete(element.id);
+          // It used to look delivered and no longer does: allow one fresh
+          // stall warning the next time the flush sees it.
+          if (baseline.has(element.id)) oversizedWarnedRef.current.delete(element.id);
+        }
         knownRef.current = stamps;
         lastOrderRef.current = orderOf(merged);
         api.updateScene({ elements: merged, captureUpdate: CaptureUpdateAction.NEVER });

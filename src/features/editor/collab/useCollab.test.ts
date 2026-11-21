@@ -360,6 +360,46 @@ describe("useCollab delta baseline", () => {
     warn.mockRestore();
   });
 
+  it("keeps an already-synced element that grew past the budget unsent", async () => {
+    const scene: Element[] = [{ id: "e1", version: 1 }];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const oversizedWarns = () =>
+      warn.mock.calls.filter(([message]) => String(message).includes("too large"));
+
+    // Mount with the original element: the baseline now holds version 1.
+    await mount(scene);
+    await open(socket);
+
+    // The element grows past one frame. Nothing can be shipped; one warning.
+    const grown: Element = { id: "e1", version: 2, text: "x".repeat(3_200_000) };
+    scene[0] = grown;
+    await act(async () => {
+      notify?.([grown], {});
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(frames()).toHaveLength(0);
+    expect(oversizedWarns()).toHaveLength(1);
+
+    // A peer frame arrives without this element. Its id is in the baseline
+    // (version 1), but the local version was never delivered.
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({ t: "elements", elements: [{ id: "remote", version: 1 }] }),
+      });
+    });
+
+    // Still unsent: the flush re-enters the stall path and says so again,
+    // instead of treating the merged local version as delivered.
+    await act(async () => {
+      notify?.([grown], {});
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(frames()).toHaveLength(0);
+    expect(oversizedWarns()).toHaveLength(2);
+
+    warn.mockRestore();
+  });
+
   it("restarts a snapshot after the server refuses a frame mid-drain", async () => {
     const big = (id: string): Element => ({ id, version: 1, text: "x".repeat(900_000) });
     // Two batches: [b1,b2,b3] then [b4].
