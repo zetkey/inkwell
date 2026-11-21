@@ -626,6 +626,7 @@ export default function DrawioEditor({
       latestXmlRef.current = "";
       lifecycle.discardPendingLocalWork();
     },
+    errorMessage: lifecycle.errorMessage,
   });
 
   const { saveNow, discardPendingLocalWork } = lifecycle;
@@ -676,6 +677,7 @@ export default function DrawioEditor({
       <LeaveConfirmDialog
         open={leave.open}
         busy={leave.busy}
+        errorMessage={leave.errorMessage}
         onOpenChange={leave.onOpenChange}
         onDiscard={leave.discard}
         onSaveAndLeave={() => void leave.saveAndLeave()}

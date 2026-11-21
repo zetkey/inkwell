@@ -22,6 +22,8 @@ export interface UseLeaveConfirmOptions {
   isDirty: boolean;
   saveNow: () => Promise<boolean>;
   discardPendingLocalWork: () => void;
+  /** Save lifecycle error, surfaced after a failed Save & Leave attempt. */
+  errorMessage?: string | null;
 }
 
 export interface UseLeaveConfirmResult {
@@ -40,13 +42,18 @@ export interface UseLeaveConfirmResult {
   /** Save & Leave button: persist, then run the queued continuation
    *  (or stay open if the save errored). */
   saveAndLeave: () => Promise<void>;
+  /** Why the last Save & Leave attempt failed; null while there is none. */
+  errorMessage: string | null;
 }
 
 export function useLeaveConfirm(opts: UseLeaveConfirmOptions): UseLeaveConfirmResult {
-  const { isDirty, saveNow, discardPendingLocalWork } = opts;
+  const { isDirty, saveNow, discardPendingLocalWork, errorMessage } = opts;
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<LeaveBusyState>(false);
+  // Set only after a failed Save & Leave: the lifecycle's own error text is
+  // read live from props on the next render, so a stale closure can't win.
+  const [saveFailed, setSaveFailed] = useState(false);
   const pendingRef = useRef<(() => void) | null>(null);
 
   const dirtyRef = useRef(isDirty);
@@ -60,12 +67,14 @@ export function useLeaveConfirm(opts: UseLeaveConfirmOptions): UseLeaveConfirmRe
       return;
     }
     pendingRef.current = cont;
+    setSaveFailed(false);
     setOpen(true);
   }, []);
 
   const cancel = useCallback(() => {
     if (busyRef.current) return;
     pendingRef.current = null;
+    setSaveFailed(false);
     setOpen(false);
   }, []);
 
@@ -79,6 +88,7 @@ export function useLeaveConfirm(opts: UseLeaveConfirmOptions): UseLeaveConfirmRe
   const discard = useCallback(() => {
     discardPendingLocalWork();
     setBusy(false);
+    setSaveFailed(false);
     setOpen(false);
     const cont = pendingRef.current;
     pendingRef.current = null;
@@ -87,10 +97,12 @@ export function useLeaveConfirm(opts: UseLeaveConfirmOptions): UseLeaveConfirmRe
 
   const saveAndLeave = useCallback(async () => {
     setBusy("save");
+    setSaveFailed(false);
     const ok = await saveNow();
     if (!ok) {
-      // Save failed — leave the dialog open so the user can pick
-      // another action (Stay / Discard).
+      // Save failed — leave the dialog open so the user can pick another
+      // action, and show why.
+      setSaveFailed(true);
       setBusy(false);
       return;
     }
@@ -126,5 +138,16 @@ export function useLeaveConfirm(opts: UseLeaveConfirmOptions): UseLeaveConfirmRe
     return () => window.removeEventListener("popstate", onPopState);
   }, [navigate, requestLeave]);
 
-  return { open, busy, requestLeave, onOpenChange, cancel, discard, saveAndLeave };
+  return {
+    open,
+    busy,
+    requestLeave,
+    onOpenChange,
+    cancel,
+    discard,
+    saveAndLeave,
+    errorMessage: saveFailed
+      ? (errorMessage ?? "Could not save. Try again, or discard your changes.")
+      : null,
+  };
 }

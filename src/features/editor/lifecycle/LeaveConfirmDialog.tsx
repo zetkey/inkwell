@@ -19,6 +19,8 @@ import type { LeaveBusyState } from "./useLeaveConfirm";
 interface LeaveConfirmDialogProps {
   open: boolean;
   busy: LeaveBusyState;
+  /** Why the last Save & Leave attempt failed. */
+  errorMessage?: string | null;
   onOpenChange: (open: boolean) => void;
   onDiscard: () => void;
   onSaveAndLeave: () => void;
@@ -27,6 +29,7 @@ interface LeaveConfirmDialogProps {
 export function LeaveConfirmDialog({
   open,
   busy,
+  errorMessage,
   onOpenChange,
   onDiscard,
   onSaveAndLeave,
@@ -39,6 +42,11 @@ export function LeaveConfirmDialog({
           <AlertDialogDescription>
             Your latest edits haven't been saved yet. If you leave now they may be lost.
           </AlertDialogDescription>
+          {errorMessage ? (
+            <p role="alert" className="text-sm text-destructive">
+              {errorMessage}
+            </p>
+          ) : null}
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={!!busy}>Stay</AlertDialogCancel>

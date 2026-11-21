@@ -234,6 +234,7 @@ export default function ExcalidrawEditor({
     isDirty: lifecycle.isDirty,
     saveNow: lifecycle.saveNow,
     discardPendingLocalWork: lifecycle.discardPendingLocalWork,
+    errorMessage: lifecycle.errorMessage,
   });
 
   const currentBlob = loaded.blob as ExcalidrawFileBlob;
@@ -303,6 +304,7 @@ export default function ExcalidrawEditor({
       <LeaveConfirmDialog
         open={leave.open}
         busy={leave.busy}
+        errorMessage={leave.errorMessage}
         onOpenChange={leave.onOpenChange}
         onDiscard={leave.discard}
         onSaveAndLeave={() => void leave.saveAndLeave()}

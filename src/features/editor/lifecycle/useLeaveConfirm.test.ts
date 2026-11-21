@@ -8,7 +8,7 @@
 //
 // Written without JSX because `vitest.config.ts` only includes `.test.ts`.
 
-import { act, createElement as h } from "react";
+import { act, createElement as h, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { BrowserRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -18,17 +18,27 @@ import { useLeaveConfirm } from "./useLeaveConfirm";
 
 function Editor({ dirty, saveOk }: { dirty: boolean; saveOk: boolean }) {
   const { pathname } = useLocation();
+  // Stands in for the save lifecycle: a failed attempt sets its error,
+  // which the dialog is expected to surface.
+  const [lifecycleError, setLifecycleError] = useState<string | null>(null);
   const leave = useLeaveConfirm({
     isDirty: dirty,
-    saveNow: async () => saveOk,
+    saveNow: async () => {
+      if (saveOk) return true;
+      setLifecycleError("Saving failed — the server rejected the update.");
+      return false;
+    },
     discardPendingLocalWork: () => {},
+    errorMessage: lifecycleError,
   });
   return h(
     "div",
     { "data-testid": "editor" },
     h("span", { "data-testid": "path" }, pathname),
     h("span", { "data-testid": "open" }, leave.open ? "open" : "closed"),
+    h("span", { "data-testid": "error" }, leave.errorMessage ?? ""),
     h("button", { type: "button", onClick: () => void leave.saveAndLeave() }, "save-and-leave"),
+    h("button", { type: "button", onClick: () => leave.cancel() }, "stay"),
   );
 }
 
@@ -86,6 +96,7 @@ async function pressBack() {
 }
 
 const openState = () => document.querySelector('[data-testid="open"]')?.textContent;
+const errorText = () => document.querySelector('[data-testid="error"]')?.textContent;
 
 async function openEditor() {
   await click("open editor");
@@ -127,7 +138,7 @@ describe("useLeaveConfirm browser Back", () => {
     expect(document.querySelector('[data-testid="editor"]')).toBeNull();
   });
 
-  it("keeps the dialog open when the save fails", async () => {
+  it("keeps the dialog open and shows why the save failed", async () => {
     await mount(true, false);
     await openEditor();
 
@@ -137,7 +148,13 @@ describe("useLeaveConfirm browser Back", () => {
     await click("save-and-leave");
 
     expect(openState()).toBe("open");
+    expect(errorText()).toContain("Saving failed");
     expect(window.location.pathname).toBe("/editor");
     expect(document.querySelector('[data-testid="editor"]')).not.toBeNull();
+
+    // Closing the dialog clears the message for the next attempt.
+    await click("stay");
+    expect(openState()).toBe("closed");
+    expect(errorText()).toBe("");
   });
 });

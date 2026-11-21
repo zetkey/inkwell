@@ -81,11 +81,16 @@ export default function MarkdownEditor({
   // keyboard-only path to the server (beforeunload) would miss it.
   useEffect(() => {
     const flush = () => sync.flush();
+    const onVisibility = () => {
+      // Symmetric with the save lifecycle: only a hidden tab is a reason
+      // to report the text early.
+      if (document.visibilityState === "hidden") sync.flush();
+    };
     window.addEventListener("beforeunload", flush);
-    document.addEventListener("visibilitychange", flush);
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.removeEventListener("beforeunload", flush);
-      document.removeEventListener("visibilitychange", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
       sync.dispose();
     };
   }, [sync]);
@@ -183,6 +188,7 @@ export default function MarkdownEditor({
     isDirty: lifecycle.isDirty,
     saveNow: lifecycle.saveNow,
     discardPendingLocalWork,
+    errorMessage: lifecycle.errorMessage,
   });
   const { saveNow } = lifecycle;
   const { requestLeave } = leave;
@@ -261,6 +267,7 @@ export default function MarkdownEditor({
       <LeaveConfirmDialog
         open={leave.open}
         busy={leave.busy}
+        errorMessage={leave.errorMessage}
         onOpenChange={leave.onOpenChange}
         onDiscard={leave.discard}
         onSaveAndLeave={() => void leave.saveAndLeave()}

@@ -42,7 +42,7 @@ import type {
   RemoteElementsMessage,
   ServerMessage,
 } from "./protocol";
-import { planSnapshot } from "./snapshot";
+import { jsonBytes, pickFilesForFrame, planSnapshot } from "./snapshot";
 
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 10_000;
@@ -172,11 +172,20 @@ export function useCollab({
     const order = orderOf(pending.elements);
     const sendOrder = orderChanged(lastOrderRef.current, order);
 
-    const files: BinaryFiles = {};
+    const pendingFiles: BinaryFiles = {};
     for (const [id, file] of Object.entries(pending.files)) {
-      if (sentFilesRef.current.has(id)) continue;
-      files[id] = file;
+      if (!sentFilesRef.current.has(id)) pendingFiles[id] = file;
     }
+
+    // Budget the frame before sending: the changed elements always go, then
+    // as many images as still fit. Anything left out stays un-sent, so a
+    // later, smaller frame can deliver it.
+    // shortcut: the `order` list is not measured; it is ids only and the
+    // 24 MiB budget leaves 8 MiB of headroom under the 32 MiB cap.
+    const files =
+      Object.keys(pendingFiles).length === 0
+        ? {}
+        : pickFilesForFrame(pendingFiles, jsonBytes(changed)).files;
 
     if (changed.length === 0 && !sendOrder && Object.keys(files).length === 0) return;
 
@@ -206,23 +215,27 @@ export function useCollab({
     const files = api.getFiles();
     const fileIds = Object.keys(files);
     const plan = planSnapshot(elements, files);
+    // Geometry alone does not fit one frame (a per-element delta of the same
+    // scene would not either): send nothing rather than kill the socket.
+    if (plan.skip) return;
     knownRef.current = stampElements(elements);
     lastOrderRef.current = order;
-    // Marked as sent even when the payload had to drop them: retrying on
-    // the next delta would only repeat an oversized frame.
-    for (const id of fileIds) sentFilesRef.current.add(id);
     // Pending edits are part of this snapshot; a stale delta must not follow.
     pendingSceneRef.current = null;
-    // shortcut: inline base64 images dominate the frame (32 MiB cap), so
-    // above the 24 MiB safe budget the snapshot ships geometry only; a
-    // peer that joins now keeps whatever images it already had until it
-    // reloads the file. Upgrade to chunked image transfer if live image
-    // delivery on join becomes required.
+    // shortcut: inline base64 images dominate the frame (32 MiB cap). Above
+    // the 24 MiB budget the snapshot ships geometry only and leaves the
+    // files un-sent, so the next delta delivers them in budget-sized
+    // batches — until then a peer keeps whatever images it already had.
+    // Upgrade to chunked image transfer if live delivery on join matters.
+    const includeFiles = fileIds.length > 0 && plan.includeFiles;
+    if (includeFiles) {
+      for (const id of fileIds) sentFilesRef.current.add(id);
+    }
     send({
       t: "elements",
       elements: [...elements],
       order,
-      ...(fileIds.length > 0 && plan.includeFiles ? { files } : {}),
+      ...(includeFiles ? { files } : {}),
     });
   }, [apiRef, send]);
 
