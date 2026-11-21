@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   CollabRoom,
   MAX_FRAME_CHARS,
+  MAX_ROOM_SOCKETS,
   orderPeers,
   type Peer,
   type PeerEntry,
   presenceFrame,
+  RATE_LIMIT_MAX_MESSAGES,
 } from "./collab";
 
 // Duck-typed WebSocket + DurableObjectState harness. The DO only touches
@@ -77,7 +79,7 @@ describe("CollabRoom frames", () => {
 
     r.webSocketMessage(a.ws, JSON.stringify({ t: "elements", elements: "nope" }));
 
-    expect(frames(a.sent)).toEqual([{ t: "error", message: "elements must be an array" }]);
+    expect(frames(a.sent)).toEqual([{ t: "error", message: "invalid elements" }]);
     expect(b.sent).toEqual([]);
   });
 });
@@ -136,5 +138,116 @@ describe("CollabRoom presence", () => {
       t: "presence",
       peers: orderPeers(entries),
     });
+  });
+});
+
+describe("CollabRoom limits", () => {
+  it("caps a room at MAX_ROOM_SOCKETS sockets", async () => {
+    const sockets = Array.from({ length: MAX_ROOM_SOCKETS }, (_, i) =>
+      socket(peer(`p${i}`), i + 1),
+    );
+    const r = room(sockets);
+
+    const res = await r.fetch(
+      new Request("https://room.test/", {
+        headers: { Upgrade: "websocket", "x-collab-user-id": "u-extra" },
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe("room full");
+  });
+
+  it("throttles a socket that floods messages", () => {
+    const a = socket(peer("a"), 1);
+    const b = socket(peer("b"), 2);
+    const r = room([a, b]);
+    const frame = JSON.stringify({ t: "elements", elements: [{ id: "el" }] });
+
+    for (let i = 0; i < 45; i++) r.webSocketMessage(a.ws, frame);
+
+    const errors = frames(a.sent).filter((f) => f.message === "too many messages");
+    const relays = b.sent.length;
+    expect(errors).toHaveLength(5);
+    expect(relays).toBe(RATE_LIMIT_MAX_MESSAGES);
+  });
+
+  it("processes a normal burst of 20 messages", () => {
+    const a = socket(peer("a"), 1);
+    const b = socket(peer("b"), 2);
+    const r = room([a, b]);
+    const frame = JSON.stringify({ t: "elements", elements: [{ id: "el" }] });
+
+    for (let i = 0; i < 20; i++) r.webSocketMessage(a.ws, frame);
+
+    expect(a.sent).toEqual([]);
+    expect(b.sent).toHaveLength(20);
+  });
+
+  it("rejects elements whose id is not a string", () => {
+    const a = socket(peer("a"), 1);
+    const b = socket(peer("b"), 2);
+    const r = room([a, b]);
+
+    r.webSocketMessage(a.ws, JSON.stringify({ t: "elements", elements: [{ id: 1 }] }));
+
+    expect(frames(a.sent)).toEqual([{ t: "error", message: "invalid elements" }]);
+    expect(b.sent).toEqual([]);
+  });
+
+  it("rejects a cursor with a non-numeric position", () => {
+    const a = socket(peer("a"), 1);
+    const b = socket(peer("b"), 2);
+    const r = room([a, b]);
+
+    r.webSocketMessage(
+      a.ws,
+      JSON.stringify({ t: "cursor", pointer: { x: "a", y: 1, tool: "selection" } }),
+    );
+
+    expect(frames(a.sent)).toEqual([{ t: "error", message: "invalid cursor" }]);
+    expect(b.sent).toEqual([]);
+  });
+
+  it("rejects an invalid button or selection map", () => {
+    const a = socket(peer("a"), 1);
+    const r = room([a]);
+
+    r.webSocketMessage(a.ws, JSON.stringify({ t: "cursor", button: "sideways" }));
+    r.webSocketMessage(a.ws, JSON.stringify({ t: "cursor", selectedElementIds: { x: 1 } }));
+
+    expect(frames(a.sent)).toEqual([
+      { t: "error", message: "invalid cursor" },
+      { t: "error", message: "invalid cursor" },
+    ]);
+  });
+
+  it("relays a well-formed cursor with the sender identity", () => {
+    const a = socket(peer("a"), 1);
+    const b = socket(peer("b"), 2);
+    const r = room([a, b]);
+
+    r.webSocketMessage(
+      a.ws,
+      JSON.stringify({
+        t: "cursor",
+        pointer: { x: 10, y: 20, tool: "selection" },
+        button: "down",
+        selectedElementIds: { el1: true },
+      }),
+    );
+
+    expect(frames(b.sent)).toEqual([
+      {
+        t: "cursor",
+        cursor: { x: 10, y: 20, tool: "selection" },
+        button: "down",
+        selectedElementIds: { el1: true },
+        from: "a",
+        id: "u-a",
+        name: "a",
+        color: "#000",
+      },
+    ]);
   });
 });

@@ -262,6 +262,10 @@ monthly cost is **$0** — Workers, R2, and D1 free tiers cover it
 comfortably, and R2 has no egress fees.
 
 ## Limitations
+- **Collaboration auth is connect-time only.** A share token or session is
+  validated when the WebSocket upgrades; revoking it takes effect on the
+  next reconnect (per-message revalidation is too expensive on the Free
+  plan).
 
 - **File blobs are capped at 4 MiB.** Every save and download parses (and,
   for export, re-stringifies) the whole blob synchronously; on the Workers

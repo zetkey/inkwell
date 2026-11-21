@@ -24,6 +24,16 @@
  *  which is a memory ceiling, not a CPU budget. */
 export const MAX_FRAME_CHARS = 4 * 1024 * 1024;
 
+/** Sockets a single room accepts. Each one costs memory and fan-out work
+ *  per relayed frame; 24 is far above a real editing session. */
+export const MAX_ROOM_SOCKETS = 24;
+
+/** Per-socket message budget: a simple fixed window (no burst refill).
+ *  40/s is ~20x a fast editor's delta rate while still bounding a hostile
+ *  socket's CPU and fan-out. */
+export const RATE_LIMIT_WINDOW_MS = 1000;
+export const RATE_LIMIT_MAX_MESSAGES = 40;
+
 export const PEER_COLORS = [
   "#e11d48", // rose
   "#d97706", // amber
@@ -104,9 +114,25 @@ function sendError(ws: WebSocket, message: string): void {
 
 export class CollabRoom implements DurableObject {
   private readonly ctx: DurableObjectState;
+  /** Per-socket message counter. Instance state only: a hibernated or
+   *  evicted room starts fresh, which is fine for an abuse guard. */
+  private readonly rate = new Map<WebSocket, { windowStart: number; count: number }>();
 
   constructor(ctx: DurableObjectState) {
     this.ctx = ctx;
+  }
+
+  /** Fixed-window token bucket: `RATE_LIMIT_MAX_MESSAGES` per window. */
+  private allowMessage(ws: WebSocket): boolean {
+    const at = Date.now();
+    const entry = this.rate.get(ws);
+    if (!entry || at - entry.windowStart >= RATE_LIMIT_WINDOW_MS) {
+      this.rate.set(ws, { windowStart: at, count: 1 });
+      return true;
+    }
+    if (entry.count >= RATE_LIMIT_MAX_MESSAGES) return false;
+    entry.count += 1;
+    return true;
   }
 
   async fetch(req: Request): Promise<Response> {
@@ -119,6 +145,12 @@ export class CollabRoom implements DurableObject {
     if (!userId) return new Response("missing user identity", { status: 401 });
     const name =
       (req.headers.get("x-collab-user-name") || "Guest").slice(0, MAX_NAME_LENGTH) || "Guest";
+
+    // Refuse before allocating a socket: the room is a fan-out hub, so its
+    // size is a hard cost boundary.
+    if (this.ctx.getWebSockets().length >= MAX_ROOM_SOCKETS) {
+      return new Response("room full", { status: 403 });
+    }
 
     const pair = new WebSocketPair();
     const client = pair[0];
@@ -133,7 +165,8 @@ export class CollabRoom implements DurableObject {
       active: true,
     };
     server.serializeAttachment({ peer: self, seq: this.nextSeq() } satisfies PeerEntry);
-    this.broadcastPresence();
+    // No presence broadcast here: the peer is announced by its own `join`,
+    // and close/error announce the departure.
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -153,6 +186,10 @@ export class CollabRoom implements DurableObject {
     const att = attachmentOf(ws);
     if (!att) return;
     const self = att.peer;
+    if (!this.allowMessage(ws)) {
+      sendError(ws, "too many messages");
+      return;
+    }
     if (typeof message !== "string") {
       sendError(ws, "binary frames are not supported");
       return;
@@ -185,25 +222,64 @@ export class CollabRoom implements DurableObject {
         this.broadcastPresence();
         return;
 
-      case "elements":
-        if (!Array.isArray(msg.elements)) {
-          sendError(ws, "elements must be an array");
+      case "elements": {
+        const elements = msg.elements;
+        if (
+          !Array.isArray(elements) ||
+          elements.some((el) => typeof el !== "object" || el === null || typeof el.id !== "string")
+        ) {
+          sendError(ws, "invalid elements");
           return;
         }
         // `undefined` extras are dropped by JSON.stringify.
         this.relay(ws, {
           t: "elements",
-          elements: msg.elements,
+          elements,
           files: msg.files,
           order: msg.order,
           from: self.peerId,
         });
         return;
+      }
 
-      case "cursor":
+      case "cursor": {
+        const cursor = msg.pointer ?? msg.cursor ?? null;
+        if (cursor !== null) {
+          if (typeof cursor !== "object" || Array.isArray(cursor)) {
+            sendError(ws, "invalid cursor");
+            return;
+          }
+          const p = cursor as { x?: unknown; y?: unknown; tool?: unknown };
+          if (
+            typeof p.x !== "number" ||
+            !Number.isFinite(p.x) ||
+            typeof p.y !== "number" ||
+            !Number.isFinite(p.y) ||
+            typeof p.tool !== "string"
+          ) {
+            sendError(ws, "invalid cursor");
+            return;
+          }
+        }
+        if (msg.button !== undefined && msg.button !== "up" && msg.button !== "down") {
+          sendError(ws, "invalid cursor");
+          return;
+        }
+        if (msg.selectedElementIds !== undefined) {
+          const sel = msg.selectedElementIds;
+          if (
+            typeof sel !== "object" ||
+            sel === null ||
+            Array.isArray(sel) ||
+            Object.values(sel).some((v) => typeof v !== "boolean")
+          ) {
+            sendError(ws, "invalid cursor");
+            return;
+          }
+        }
         this.relay(ws, {
           t: "cursor",
-          cursor: msg.pointer ?? msg.cursor ?? null,
+          cursor,
           button: msg.button,
           selectedElementIds: msg.selectedElementIds,
           from: self.peerId,
@@ -212,6 +288,7 @@ export class CollabRoom implements DurableObject {
           color: self.color,
         });
         return;
+      }
 
       case "activity": {
         const active = msg.active === true;
@@ -227,19 +304,15 @@ export class CollabRoom implements DurableObject {
     }
   }
 
-  webSocketClose(ws: WebSocket, code: number, reason: string): void {
-    // 1005/1006 are pseudo-codes (no status / abnormal) and cannot be
-    // sent back; echoing them throws and would skip the presence update.
-    const reply = code === 1005 || code === 1006 ? 1000 : code;
-    try {
-      ws.close(reply, reason);
-    } catch {
-      // already closed
-    }
+  webSocketClose(ws: WebSocket, _code: number, _reason: string): void {
+    // The runtime already closed the socket; closing it again can throw
+    // and would skip the presence update.
+    this.rate.delete(ws);
     this.broadcastPresence(ws);
   }
 
   webSocketError(ws: WebSocket): void {
+    this.rate.delete(ws);
     this.broadcastPresence(ws);
   }
 
