@@ -5,11 +5,9 @@
 // lives in `services/trash.ts`.
 
 import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
-import type { Env, FileMeta, FileRow } from "../../types";
+import type { Env, FileRow } from "../../types";
 import { getDb, t } from "../client";
 import { notTrashed } from "../filters";
-
-export { notTrashed };
 
 export async function findById(env: Env, owner: string, id: string): Promise<FileRow | null> {
   const db = getDb(env);
@@ -116,20 +114,6 @@ export async function listAtRoot(env: Env, owner: string, limit = 1000): Promise
     .all();
 }
 
-// Rows owned by `owner` and IDs in the file id set. Used by tag/share
-// filters.
-export async function idsOwnedBy(env: Env, owner: string, ids: string[]): Promise<Set<string>> {
-  if (ids.length === 0) return new Set();
-  const db = getDb(env);
-  const rows = await db
-    .select({ id: t.files.id })
-    .from(t.files)
-    .where(and(eq(t.files.owner, owner), notTrashed(t.files)))
-    .all();
-  const owned = new Set(rows.map((r) => r.id));
-  return new Set(ids.filter((id) => owned.has(id)));
-}
-
 // ─── Mutations ───────────────────────────────────────────────────────
 export async function insert(env: Env, row: FileRow): Promise<void> {
   const db = getDb(env);
@@ -182,32 +166,4 @@ export async function updateMeta(
     .set(patch)
     .where(and(eq(t.files.id, id), eq(t.files.owner, owner)))
     .run();
-}
-
-// ─── Convenience: serialize a row to FileMeta with optional extras ────
-//
-// This exists because most route response paths follow the same pattern:
-//   1. Run a meta-mutation, 2. Fetch fresh tags + share count,
-//   3. Construct a FileMeta literal with the new field values folded in.
-// The route imports this helper to avoid duplicating the literal.
-export function buildMeta(
-  row: FileRow,
-  tags: string[],
-  extras: { activeShareCount?: number } = {},
-): FileMeta {
-  return {
-    id: row.id,
-    folderId: row.folder_id ?? null,
-    name: row.name,
-    kind: row.kind,
-    tags,
-    version: row.version,
-    sizeBytes: row.size_bytes,
-    hasThumb: row.has_thumb,
-    thumbUpdatedAt: row.thumb_updated_at,
-    activeShareCount: extras.activeShareCount ?? 0,
-    starredAt: row.starred_at ?? null,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
 }

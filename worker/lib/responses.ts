@@ -7,6 +7,7 @@
 // downloads) live in one place rather than being copy-pasted.
 
 import { zipSync } from "fflate";
+import { isDrawioBlob } from "../services/file-blob";
 import { isStaticSiteBlob, r2StaticSiteAssetKey } from "../services/static-site";
 import type { ExcalidrawFileBlob, FileBlob, FileKind, FileRow } from "../types";
 import { assertNever } from "./util";
@@ -231,13 +232,6 @@ function downloadExtensionForKind(kind: FileKind): "excalidraw" | "drawio" | "zi
     default:
       return assertNever(kind);
   }
-}
-
-function isDrawioBlob(blob: FileBlob): blob is FileBlob & { kind: "drawio"; xml: string } {
-  return (
-    (blob as { kind?: unknown }).kind === "drawio" &&
-    typeof (blob as { xml?: unknown }).xml === "string"
-  );
 }
 
 export async function parseStoredFileBlob(obj: R2ObjectBody): Promise<FileBlob | null> {

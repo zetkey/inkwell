@@ -21,7 +21,6 @@ import { ownerRenderPayload, signRender } from "../lib/crypto";
 import {
   errorResponse,
   jsonResponse,
-  r2FileKey,
   r2ThumbKey,
   serveThumb,
   streamFileResponse,
@@ -102,9 +101,10 @@ r.get("/", async (c) => {
     .map((t) => t.trim().toLowerCase())
     .filter(Boolean);
   const q = (params.get("q") || "").trim();
+  const filtering = q !== "" || tagFilters.length > 0;
   // Without post-filters the repo can apply `limit` in SQL; otherwise
   // fetch the capped set and trim after filtering.
-  const sqlLimit = q || tagFilters.length > 0 ? MAX_LIST_LIMIT : limit;
+  const sqlLimit = filtering ? MAX_LIST_LIMIT : limit;
 
   let rows: FileRow[];
   if (folderParam === "root") {
@@ -119,6 +119,11 @@ r.get("/", async (c) => {
   } else {
     rows = await filesRepo.listForOwner(c.env, owner, { starred, limit: sqlLimit });
   }
+  // q/tag are applied in memory over the newest `MAX_LIST_LIMIT` rows, so
+  // an older match beyond that window would vanish silently. Say so
+  // instead: the client can narrow the query.
+  const scanned = rows.length;
+  const truncated = filtering && scanned >= MAX_LIST_LIMIT;
 
   if (starred && folderParam) {
     rows = rows
@@ -154,7 +159,7 @@ r.get("/", async (c) => {
   const out: FileMeta[] = rows.map((row) =>
     rowToMeta(row, tagMap.get(row.id) ?? [], { activeShareCount: shareMap.get(row.id) ?? 0 }),
   );
-  return jsonResponse({ files: out });
+  return jsonResponse(filtering ? { files: out, truncated } : { files: out });
 });
 
 // ─── Create ──────────────────────────────────────────────────────────
@@ -729,12 +734,5 @@ function stripCommonPrefix(entries: Record<string, Uint8Array>): Record<string, 
   }
   return out;
 }
-
-// ─── Internal helpers exposed to other route modules ────────────────
-//
-// `r2FileKey` is exported from lib/responses; share routes import it
-// directly. We re-export here only to keep the file-blob R2 layout
-// constants in one mental place when reading this module.
-export { r2FileKey, r2ThumbKey };
 
 export default r;

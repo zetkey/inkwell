@@ -45,7 +45,7 @@ import { r2StaticSitePrefix } from "./static-site";
 type SqliteBatchItem = BatchItem<"sqlite">;
 
 /** Most files a single duplicate request may copy (recursively). */
-export const MAX_DUPLICATE_FILES = MAX_BULK_ITEMS;
+const MAX_DUPLICATE_FILES = MAX_BULK_ITEMS;
 
 // R2 fan-out per request. Keeps a big folder copy fast without
 // stampeding the bucket or the Worker's concurrent-subrequest limit.
