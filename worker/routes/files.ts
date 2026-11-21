@@ -18,6 +18,7 @@ import * as foldersRepo from "../db/repos/folders";
 import * as sharesRepo from "../db/repos/shares";
 import * as tagsRepo from "../db/repos/tags";
 import { ownerRenderPayload, signRender } from "../lib/crypto";
+import { bodyDeclaredTooLarge } from "../lib/http";
 import { r2ThumbKey } from "../lib/keys";
 import { errorResponse, jsonResponse, serveThumb, streamFileResponse } from "../lib/responses";
 import { now } from "../lib/util";
@@ -212,7 +213,7 @@ r.post("/import", async (c) => {
     return errorResponse(404, "folder not found");
   }
 
-  if (Number(c.req.header("content-length") || "0") > MAX_FILE_BYTES) {
+  if (bodyDeclaredTooLarge(c.req.raw, MAX_FILE_BYTES)) {
     return errorResponse(413, "file exceeds 4 MiB");
   }
   const buf = await c.req.arrayBuffer();
@@ -370,7 +371,7 @@ r.put("/:id/thumb", async (c) => {
   const row = await filesRepo.findById(c.env, owner, id);
   if (!row) return errorResponse(404, "file not found");
 
-  if (Number(c.req.header("content-length") || "0") > MAX_THUMB_BYTES) {
+  if (bodyDeclaredTooLarge(c.req.raw, MAX_THUMB_BYTES)) {
     return errorResponse(413, "thumbnail too large");
   }
   const buf = await c.req.raw.arrayBuffer();
@@ -509,8 +510,7 @@ r.post("/:id/assets", async (c) => {
   if (mismatch) return mismatch;
 
   // Cheap precheck: refuse outsized request bodies before parsing.
-  const cl = Number(c.req.header("content-length") || "0");
-  if (cl > MAX_SITE_TOTAL_BYTES) {
+  if (bodyDeclaredTooLarge(c.req.raw, MAX_SITE_TOTAL_BYTES)) {
     return errorResponse(413, `upload exceeds ${MAX_SITE_TOTAL_BYTES} bytes`);
   }
 
@@ -597,8 +597,7 @@ r.post("/:id/assets/zip", async (c) => {
   const mismatch = checkIfMatch(c.req.raw, row);
   if (mismatch) return mismatch;
 
-  const cl = Number(c.req.header("content-length") || "0");
-  if (cl > MAX_SITE_TOTAL_BYTES) {
+  if (bodyDeclaredTooLarge(c.req.raw, MAX_SITE_TOTAL_BYTES)) {
     return errorResponse(413, `upload exceeds ${MAX_SITE_TOTAL_BYTES} bytes`);
   }
 

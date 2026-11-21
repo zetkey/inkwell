@@ -14,6 +14,7 @@ import { getDb, t } from "../db/client";
 import { chunk } from "../db/filters";
 import * as filesRepo from "../db/repos/files";
 import { r2FileKey, r2ThumbKey } from "../lib/keys";
+import { r2DeleteAll } from "../lib/r2";
 import type { Env, FileKind } from "../types";
 import { deleteAllStaticSiteAssets } from "./static-site";
 
@@ -46,18 +47,11 @@ export async function deleteFileObjects(
   }
   const failed = new Set<string>();
   for (const batch of chunk([...keyOwner.keys()], R2_DELETE_BATCH)) {
-    try {
-      await env.R2.delete(batch);
-    } catch {
-      // Retry one-by-one so only the keys that really failed keep their
-      // row (a multi-delete error doesn't say which key was at fault).
-      const results = await Promise.allSettled(batch.map((k) => env.R2.delete(k)));
-      results.forEach((result, i) => {
-        if (result.status === "rejected") {
-          const id = keyOwner.get(batch[i]);
-          if (id) failed.add(id);
-        }
-      });
+    // `r2DeleteAll` retries one-by-one on a failed multi-delete, so only
+    // the keys that really failed keep their row.
+    for (const key of await r2DeleteAll(env, batch)) {
+      const id = keyOwner.get(key);
+      if (id) failed.add(id);
     }
   }
   await Promise.all(

@@ -417,3 +417,23 @@ export function isShareActive(r: ShareRow, nowMs: number): boolean {
   if (r.expires_at !== null && r.expires_at <= nowMs) return false;
   return true;
 }
+
+/** Shape guard for a stored static-site manifest. Lives here (not in the
+ *  static-site service) so the response layer can narrow without importing
+ *  a service. */
+export function isStaticSiteBlob(blob: unknown): blob is StaticSiteFileBlob {
+  if (!blob || typeof blob !== "object") return false;
+  const o = blob as { kind?: unknown; entry?: unknown; assets?: unknown };
+  if (o.kind !== "static-site") return false;
+  if (typeof o.entry !== "string" || !o.entry) return false;
+  if (!Array.isArray(o.assets)) return false;
+  for (const a of o.assets) {
+    if (!a || typeof a !== "object") return false;
+    const r = a as Record<string, unknown>;
+    if (typeof r.path !== "string") return false;
+    if (typeof r.size !== "number") return false;
+    if (typeof r.contentType !== "string") return false;
+    if (typeof r.updatedAt !== "number") return false;
+  }
+  return true;
+}

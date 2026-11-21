@@ -20,8 +20,15 @@
 import { unzipSync } from "fflate";
 import * as filesRepo from "../db/repos/files";
 import { r2FileKey, r2StaticSiteAssetKey, r2StaticSitePrefix } from "../lib/keys";
-import { now } from "../lib/util";
-import type { Env, FileRow, StaticSiteAsset, StaticSiteFileBlob } from "../types";
+import { r2DeleteAll } from "../lib/r2";
+import { escapeMarkup, now } from "../lib/util";
+import {
+  type Env,
+  type FileRow,
+  isStaticSiteBlob,
+  type StaticSiteAsset,
+  type StaticSiteFileBlob,
+} from "../types";
 
 // ─── Caps ───────────────────────────────────────────────────────────
 /** Single-asset upload cap. Independent of the 4 MiB blob cap: assets are
@@ -165,23 +172,6 @@ export function emptyManifest(entry = "index.html"): StaticSiteFileBlob {
   return { kind: "static-site", entry, assets: [] };
 }
 
-export function isStaticSiteBlob(blob: unknown): blob is StaticSiteFileBlob {
-  if (!blob || typeof blob !== "object") return false;
-  const o = blob as { kind?: unknown; entry?: unknown; assets?: unknown };
-  if (o.kind !== "static-site") return false;
-  if (typeof o.entry !== "string" || !o.entry) return false;
-  if (!Array.isArray(o.assets)) return false;
-  for (const a of o.assets) {
-    if (!a || typeof a !== "object") return false;
-    const r = a as Record<string, unknown>;
-    if (typeof r.path !== "string") return false;
-    if (typeof r.size !== "number") return false;
-    if (typeof r.contentType !== "string") return false;
-    if (typeof r.updatedAt !== "number") return false;
-  }
-  return true;
-}
-
 /** Validate a parsed manifest. Returns null on success or an error
  *  message. Also enforces the path-prefix-collision invariant and that
  *  `entry` exists in `assets`. */
@@ -257,14 +247,8 @@ export async function deleteAllStaticSiteAssets(env: Env, id: string): Promise<b
     const list = await env.R2.list({ prefix, cursor, limit: 1000 });
     const keys = list.objects.map((o) => o.key);
     if (keys.length > 0) {
-      // R2.delete accepts an array on supported runtimes; fall back to
-      // a Promise.allSettled fan-out to avoid runtime surprises.
-      try {
-        await env.R2.delete(keys);
-      } catch {
-        const results = await Promise.allSettled(keys.map((k) => env.R2.delete(k)));
-        if (results.some((r) => r.status === "rejected")) ok = false;
-      }
+      const failed = await r2DeleteAll(env, keys);
+      if (failed.length > 0) ok = false;
     }
     cursor = list.truncated ? list.cursor : undefined;
   } while (cursor);
@@ -482,11 +466,12 @@ export async function writePendingAssets(
 
 export async function deletePendingPaths(env: Env, id: string, paths: string[]): Promise<void> {
   if (paths.length === 0) return;
-  try {
-    await env.R2.delete(paths.map((p) => r2StaticSiteAssetKey(id, p)));
-  } catch {
-    await Promise.allSettled(paths.map((p) => env.R2.delete(r2StaticSiteAssetKey(id, p))));
-  }
+  // Best-effort: a leftover object is wasted storage, never a broken
+  // manifest (the caller deletes assets only after publishing the new one).
+  await r2DeleteAll(
+    env,
+    paths.map((p) => r2StaticSiteAssetKey(id, p)),
+  );
 }
 
 export interface ManifestClaim {
@@ -565,7 +550,7 @@ const SEED_INDEX_HTML = (name: string) => `<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>${escapeHtml(name)}</title>
+<title>${escapeMarkup(name)}</title>
 <style>
   body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.6; color: #1f2937; }
   h1 { font-weight: 700; letter-spacing: -0.01em; }
@@ -574,19 +559,11 @@ const SEED_INDEX_HTML = (name: string) => `<!doctype html>
 </style>
 </head>
 <body>
-<h1>${escapeHtml(name)}</h1>
+<h1>${escapeMarkup(name)}</h1>
 <p>This is an empty static site. Upload files (or a <code>.zip</code> archive) to replace this page.</p>
 </body>
 </html>
 `;
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
 
 /** Build the seed asset bytes (no R2 writes). The caller chains this
  *  with `writeSeedSite` after the file row exists. */

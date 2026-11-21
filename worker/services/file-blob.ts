@@ -9,9 +9,10 @@ import * as filesRepo from "../db/repos/files";
 import * as sharesRepo from "../db/repos/shares";
 import * as tagsRepo from "../db/repos/tags";
 import { newId } from "../lib/crypto";
+import { bodyDeclaredTooLarge } from "../lib/http";
 import { r2FileKey } from "../lib/keys";
 import { errorResponse, jsonResponse } from "../lib/responses";
-import { assertNever, now } from "../lib/util";
+import { assertNever, escapeMarkup, now } from "../lib/util";
 import {
   type Env,
   type ExcalidrawFileBlob,
@@ -20,11 +21,12 @@ import {
   type FileMeta,
   type FileRow,
   isDrawioBlob,
+  isStaticSiteBlob,
   type NotesFileBlob,
   rowToMeta,
   type StaticSiteFileBlob,
 } from "../types";
-import { emptyManifest, isStaticSiteBlob, validateManifest, writeSeedSite } from "./static-site";
+import { emptyManifest, validateManifest, writeSeedSite } from "./static-site";
 
 /** Blob cap. Kept at 4 MiB because every save/download path parses the
  *  JSON synchronously (`JSON.parse` ≈1 ms/MiB, plus `stringify` on
@@ -62,16 +64,8 @@ export function seedManifestForKind(kind: FileKind, name: string): FileBlob {
 }
 
 function emptyDrawioXml(name: string): string {
-  const safeName = escapeXml(name || "Page-1");
+  const safeName = escapeMarkup(name || "Page-1");
   return `<mxfile host="Inkwell" version="1.0"><diagram id="${newId()}" name="${safeName}"><mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0"><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>`;
-}
-
-function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 export function isNotesBlob(blob: FileBlob): blob is NotesFileBlob {
@@ -213,8 +207,9 @@ export async function putFileBlob(env: Env, row: FileRow, req: Request): Promise
 
   // Refuse an outsized body from its header before buffering it; the
   // byteLength check below still covers chunked/lying clients.
-  const declared = Number(req.headers.get("content-length") || "0");
-  if (declared > MAX_FILE_BYTES) return errorResponse(413, "file exceeds 4 MiB");
+  if (bodyDeclaredTooLarge(req, MAX_FILE_BYTES)) {
+    return errorResponse(413, "file exceeds 4 MiB");
+  }
 
   const buf = await req.arrayBuffer();
   if (buf.byteLength === 0) return errorResponse(400, "empty body");
@@ -252,9 +247,17 @@ export async function putFileBlob(env: Env, row: FileRow, req: Request): Promise
   });
   if (nextVersion === null) return await versionConflict(env, row);
 
+  let writeFailed = false;
   try {
     await writeR2Blob(env, row.id, buf);
   } catch {
+    // The put can fail on the response path after R2 committed the object.
+    // Confirm before rolling back: if the stored size already matches the
+    // body, the write landed and the save is a success.
+    const stored = await env.R2.head(r2FileKey(row.id)).catch(() => null);
+    writeFailed = stored?.size !== buf.byteLength;
+  }
+  if (writeFailed) {
     // Roll the claim back so the client can retry with the same
     // `If-Match` instead of a 409 against a write that never happened.
     await filesRepo.releaseVersion(env, row.owner, row.id, {

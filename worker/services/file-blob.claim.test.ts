@@ -37,12 +37,19 @@ function row(overrides: Partial<FileRow> = {}): FileRow {
   };
 }
 
-function fakeEnv(puts: string[], failPut = false): Env {
+function fakeEnv(
+  puts: string[],
+  putFailure?: { failPut?: boolean; headSize?: number | null },
+): Env {
   return {
     R2: {
       put: async (key: string) => {
-        if (failPut) throw new Error("R2 unavailable");
+        if (putFailure?.failPut) throw new Error("R2 unavailable");
         puts.push(key);
+      },
+      head: async () => {
+        const size = putFailure?.headSize;
+        return size === null || size === undefined ? null : { size };
       },
     },
   } as unknown as Env;
@@ -111,7 +118,7 @@ describe("putFileBlob rollback", () => {
   it("releases the claim when the R2 write fails", async () => {
     mocks.claimVersion.mockResolvedValue(4);
     const puts: string[] = [];
-    const env = fakeEnv(puts, true);
+    const env = fakeEnv(puts, { failPut: true, headSize: null });
     const req = new Request("https://inkwell.test/api/files/file-1", {
       method: "PUT",
       headers: { "if-match": '"3"' },
@@ -304,5 +311,45 @@ describe("mirrorRenameIntoExcalidrawBlob", () => {
     await mirrorRenameIntoExcalidrawBlob(env, row({ kind: "drawio" }), "x");
 
     expect(touched).toBe(false);
+  });
+});
+
+describe("putFileBlob ambiguous put failures", () => {
+  const bodyLength = new TextEncoder().encode(body).byteLength;
+
+  it("treats a failed put as success when the stored size already matches", async () => {
+    mocks.claimVersion.mockResolvedValue(4);
+    const env = fakeEnv([], { failPut: true, headSize: bodyLength });
+    const req = new Request("https://inkwell.test/api/files/file-1", {
+      method: "PUT",
+      headers: { "if-match": '"3"' },
+      body,
+    });
+
+    const res = await putFileBlob(env, row(), req);
+
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { version: number }).toMatchObject({ version: 4 });
+    expect(mocks.releaseVersion).not.toHaveBeenCalled();
+  });
+
+  it("rolls the claim back when the stored size is still the old one", async () => {
+    mocks.claimVersion.mockResolvedValue(4);
+    const env = fakeEnv([], { failPut: true, headSize: 128 });
+    const req = new Request("https://inkwell.test/api/files/file-1", {
+      method: "PUT",
+      headers: { "if-match": '"3"' },
+      body,
+    });
+
+    const res = await putFileBlob(env, row(), req);
+
+    expect(res.status).toBe(500);
+    expect(mocks.releaseVersion).toHaveBeenCalledWith(
+      env,
+      "user-1",
+      "file-1",
+      expect.objectContaining({ expectedVersion: 4 }),
+    );
   });
 });

@@ -7,9 +7,8 @@
 // downloads) live in one place rather than being copy-pasted.
 
 import { zipSync } from "fflate";
-import { isStaticSiteBlob } from "../services/static-site";
 import type { ExcalidrawFileBlob, FileBlob, FileKind, FileRow } from "../types";
-import { isDrawioBlob } from "../types";
+import { isDrawioBlob, isStaticSiteBlob } from "../types";
 import { r2FileKey, r2StaticSiteAssetKey } from "./keys";
 import { assertNever } from "./util";
 

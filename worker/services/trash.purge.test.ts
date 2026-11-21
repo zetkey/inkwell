@@ -55,6 +55,28 @@ function fileRows(): number {
 beforeEach(seed);
 
 describe("purgeItems R2 failure", () => {
+  it("keeps the file row (detached) when a folder's file cannot be cleaned", async () => {
+    db.exec(
+      "INSERT INTO folders (id, owner, parent_id, name, deleted_at, trashed_via) VALUES ('d1', 'u1', NULL, 'Gone', 5, NULL)",
+    );
+    db.exec("UPDATE files SET folder_id = 'd1', trashed_via = 'd1' WHERE id = 'f1'");
+
+    const result = await purgeItems(env(true), "u1", [{ type: "folder", id: "d1" }]);
+
+    // The folder row is gone (it owns no R2 objects); its file stays.
+    expect(result).toEqual({ purged: 1, failed: 1 });
+    const row = db.prepare("SELECT folder_id, deleted_at FROM files WHERE id = 'f1'").get() as {
+      folder_id: string | null;
+      deleted_at: number | null;
+    };
+    // Still in Trash, detached from the folder that did get purged.
+    expect(row.folder_id).toBeNull();
+    expect(row.deleted_at).toBe(5);
+    expect(Number((db.prepare("SELECT COUNT(*) AS n FROM folders").get() as { n: number }).n)).toBe(
+      0,
+    );
+  });
+
   it("keeps the D1 row and reports the failure", async () => {
     const result = await purgeItems(env(true), "u1", [{ type: "file", id: "f1" }]);
 
