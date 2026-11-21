@@ -545,6 +545,7 @@ r.post("/:id/assets", async (c) => {
 
   await writePendingAssets(c.env, id, pending);
   const committed = await commitManifest(c.env, row, nextManifest);
+  if (!committed) return errorResponse(409, "version mismatch");
   return siteResponse(c.env, owner, row, nextManifest, committed);
 });
 
@@ -620,6 +621,7 @@ r.post("/:id/assets/zip", async (c) => {
   await deleteAllStaticSiteAssets(c.env, id);
   await writePendingAssets(c.env, id, pending);
   const committed = await commitManifest(c.env, row, nextManifest);
+  if (!committed) return errorResponse(409, "version mismatch");
   return siteResponse(c.env, owner, row, nextManifest, committed);
 });
 
@@ -653,6 +655,7 @@ r.delete("/:id/assets/:path{.+}", async (c) => {
 
   await deletePendingPaths(c.env, id, [path]);
   const committed = await commitManifest(c.env, row, nextManifest);
+  if (!committed) return errorResponse(409, "version mismatch");
   return siteResponse(c.env, owner, row, nextManifest, committed);
 });
 
@@ -700,6 +703,7 @@ r.put("/:id/entry", async (c) => {
   }
 
   const committed = await commitManifest(c.env, row, nextManifest);
+  if (!committed) return errorResponse(409, "version mismatch");
   return siteResponse(c.env, owner, row, nextManifest, committed);
 });
 

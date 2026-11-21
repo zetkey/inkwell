@@ -188,36 +188,50 @@ async function serveAsset(env: Env, row: FileRow, relpath: string): Promise<Resp
   const obj = await env.R2.get(r2StaticSiteAssetKey(row.id, resolved.path));
   if (!obj) return errorResponse(404, "asset missing in R2");
 
-  // CSP rationale: this content is the uploader's own HTML/CSS/JS.
-  // We deliberately allow loose `script-src` / `style-src` (incl.
-  // `'unsafe-inline'`/`'unsafe-eval'`) so the uploader's site behaves
-  // the way it was authored. The real security boundary is the
-  // dedicated tab — `frame-ancestors 'self'` plus `X-Frame-Options:
-  // SAMEORIGIN` ensure only Inkwell-origin pages can iframe these
-  // assets, which prevents an attacker from embedding a victim's
-  // signed URL inside a phishing page.
-  //
-  // `Referrer-Policy: no-referrer` keeps the signed URL out of
-  // outbound link Referer headers (so a click from inside the user's
-  // site doesn't leak the HMAC to third parties).
+  const headers = assetSecurityHeaders(resolved.contentType);
+  if (obj.httpEtag) headers.set("etag", obj.httpEtag);
+
+  return new Response(obj.body, { headers });
+}
+
+/** Security headers for every static-site asset response.
+ *
+ *  The content is the uploader's own HTML/CSS/JS, so `script-src` /
+ *  `style-src` stay loose (`'unsafe-inline'`/`'unsafe-eval'`) to keep
+ *  authored sites working — except for one thing: the `sandbox`
+ *  directive without `allow-same-origin` gives the document an opaque
+ *  origin. This is what stops an uploaded page from calling
+ *  `/api/*` with the viewer's session cookie (stored XSS on the app
+ *  origin): a sandboxed document's fetches are cross-origin and
+ *  credential-less. `frame-ancestors 'self'` + `x-frame-options`
+ *  still limit framing; the sandbox is the cookie boundary.
+ *
+ *  Tradeoff: opaque origins have no `localStorage`/`document.cookie`
+ *  and relative URLs resolve against an opaque base, so a site that
+ *  depends on browser storage stops working. That is deliberate.
+ *
+ *  `Referrer-Policy: no-referrer` keeps the signed URL out of outbound
+ *  link Referer headers (so a click from inside the user's site
+ *  doesn't leak the HMAC to third parties).
+ */
+export function assetSecurityHeaders(contentType: string): Headers {
   const headers = new Headers();
-  headers.set("content-type", resolved.contentType);
+  headers.set("content-type", contentType);
   headers.set("cache-control", "private, max-age=300");
   headers.set("x-content-type-options", "nosniff");
   headers.set("x-frame-options", "SAMEORIGIN");
   headers.set("referrer-policy", "no-referrer");
   headers.set(
     "content-security-policy",
-    "default-src 'self' data: blob: https:; " +
+    "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads; " +
+      "default-src 'self' data: blob: https:; " +
       "script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; " +
       "style-src 'self' 'unsafe-inline' data: blob: https:; " +
       "img-src 'self' data: blob: https:; " +
       "font-src 'self' data: blob: https:; " +
       "frame-ancestors 'self'",
   );
-  if (obj.httpEtag) headers.set("etag", obj.httpEtag);
-
-  return new Response(obj.body, { headers });
+  return headers;
 }
 
 /** Resolve a request relpath to an actual manifest entry.

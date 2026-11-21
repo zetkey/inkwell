@@ -212,21 +212,6 @@ export async function putFileBlob(env: Env, row: FileRow, req: Request): Promise
     return errorResponse(400, "static-site files are managed via /api/files/:id/assets endpoints");
   }
 
-  // Optimistic concurrency: if the client supplies If-Match and it
-  // doesn't match the current version, refuse and return the current
-  // metadata so the client can decide what to do.
-  const ifMatch = req.headers.get("if-match");
-  if (ifMatch !== null) {
-    const wanted = ifMatch.replace(/^"|"$/g, "");
-    if (wanted !== String(row.version)) {
-      const tags = await tagsRepo.listForEntity(env, "file", row.id);
-      return jsonResponse(
-        { error: "version mismatch", current: rowToMeta(row, tags) },
-        { status: 409 },
-      );
-    }
-  }
-
   const buf = await req.arrayBuffer();
   if (buf.byteLength === 0) return errorResponse(400, "empty body");
   if (buf.byteLength > MAX_FILE_BYTES) return errorResponse(413, "file too large");
@@ -240,15 +225,37 @@ export async function putFileBlob(env: Env, row: FileRow, req: Request): Promise
   const validationError = validateBlobForKind(row.kind, parsed);
   if (validationError) return errorResponse(400, validationError);
 
-  await writeR2Blob(env, row.id, buf);
+  // Optimistic concurrency: an `If-Match` is the version the client's
+  // write is based on. The check lives in the same UPDATE that bumps
+  // the version (see `claimVersion`) — comparing in memory here would
+  // let two concurrent saves both pass and one edit vanish.
+  let expectedVersion: number | undefined;
+  const ifMatch = req.headers.get("if-match");
+  if (ifMatch !== null) {
+    const wanted = Number(ifMatch.replace(/^"|"$/g, ""));
+    if (!Number.isInteger(wanted)) return await versionConflict(env, row);
+    expectedVersion = wanted;
+  }
 
   const ts = now();
-  const nextVersion = row.version + 1;
-  await filesRepo.updateMeta(env, row.owner, row.id, {
-    version: nextVersion,
-    size_bytes: buf.byteLength,
-    updated_at: ts,
+  // Claim the next version BEFORE writing R2: the loser of a race bails
+  // out here with the row untouched, instead of overwriting the winner's
+  // blob.
+  const nextVersion = await filesRepo.claimVersion(env, row.owner, row.id, {
+    expectedVersion,
+    sizeBytes: buf.byteLength,
+    updatedAt: ts,
   });
+  if (nextVersion === null) return await versionConflict(env, row);
+
+  try {
+    await writeR2Blob(env, row.id, buf);
+  } catch {
+    // The claim already advanced `version`, so the stored blob still
+    // holds the previous content: report it instead of handing the
+    // client a success it would cache.
+    return errorResponse(500, "blob write failed; stored content was not updated");
+  }
 
   const tags = await tagsRepo.listForEntity(env, "file", row.id);
   const shareMap = await sharesRepo.countActiveByTarget(env, row.owner, "file", [row.id]);
@@ -267,6 +274,16 @@ export async function putFileBlob(env: Env, row: FileRow, req: Request): Promise
     createdAt: row.created_at,
     updatedAt: ts,
   } satisfies FileMeta);
+}
+
+// 409 with the freshest metadata the caller can retry against.
+async function versionConflict(env: Env, row: FileRow): Promise<Response> {
+  const latest = (await filesRepo.findById(env, row.owner, row.id)) ?? row;
+  const tags = await tagsRepo.listForEntity(env, "file", row.id);
+  return jsonResponse(
+    { error: "version mismatch", current: rowToMeta(latest, tags) },
+    { status: 409 },
+  );
 }
 
 // Create a file: one R2 seed blob plus the D1 row, in that order.

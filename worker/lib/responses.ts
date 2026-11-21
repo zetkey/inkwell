@@ -11,6 +11,12 @@ import { isStaticSiteBlob, r2StaticSiteAssetKey } from "../services/static-site"
 import type { ExcalidrawFileBlob, FileBlob, FileKind, FileRow } from "../types";
 import { assertNever } from "./util";
 
+/** Total site bytes we will ZIP for a download. Store-only `zipSync`
+ *  costs ~2.4 ms per MiB of incompressible bytes in workerd (measured
+ *  4 MB ≈ 9 ms), so 3 MiB leaves headroom under the Free plan's 10 ms
+ *  CPU budget for the manifest read and R2 fan-out. */
+export const MAX_SITE_ZIP_BYTES = 3 * 1024 * 1024;
+
 export function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
     ...init,
@@ -151,13 +157,23 @@ export async function streamFileResponse(
     }
     if (row.kind === "static-site") {
       // Re-package the site's R2 assets into a single ZIP. The
-      // manifest blob lists every asset path, so we fan-out R2 reads
-      // and feed the result to fflate. `zipSync` is memory-bounded by
-      // the 100 MB site cap — within Workers limits but tight; if it
-      // becomes a problem we can switch to the streaming `Zip` API.
+      // manifest lists every asset path, so we fan-out R2 reads and
+      // feed the result to fflate. Store-only (`level: 0`) on purpose:
+      // deflating 4 MB of incompressible bytes measured ~61 ms CPU in
+      // workerd versus ~9 ms store-only, and the Free plan budget is
+      // 10 ms per request. `MAX_SITE_ZIP_BYTES` keeps the rest of the
+      // request (manifest read, R2 fan-out, copies) inside that budget;
+      // bigger sites stay reachable through their per-asset URLs.
       const manifest = await parseStoredFileBlob(obj);
       if (!manifest || !isStaticSiteBlob(manifest)) {
         return errorResponse(500, "invalid static-site manifest");
+      }
+      const totalBytes = manifest.assets.reduce((sum, a) => sum + a.size, 0);
+      if (totalBytes > MAX_SITE_ZIP_BYTES) {
+        return errorResponse(
+          413,
+          `site is too large to ZIP (max ${MAX_SITE_ZIP_BYTES} bytes); open the site URL to download assets individually`,
+        );
       }
       const entries: Record<string, Uint8Array> = {};
       for (const a of manifest.assets) {
@@ -167,7 +183,7 @@ export async function streamFileResponse(
         }
         entries[a.path] = new Uint8Array(await assetObj.arrayBuffer());
       }
-      const zip = zipSync(entries);
+      const zip = zipSync(entries, { level: 0 });
       headers["content-type"] = "application/zip";
       return new Response(zip, { headers });
     }

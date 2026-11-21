@@ -433,21 +433,26 @@ export async function deletePendingPaths(env: Env, id: string, paths: string[]):
 }
 
 /** Commit a manifest + bump the file row's `version`, `size_bytes`,
- *  and `updated_at`. Returns the new version. */
+ *  and `updated_at`. Returns the new version, or `null` when another
+ *  writer already advanced the row (caller → 409).
+ *
+ *  The claim is one conditional UPDATE taken *before* the manifest
+ *  write, so two concurrent asset mutations on the same base version
+ *  cannot both land — the loser leaves the manifest untouched. */
 export async function commitManifest(
   env: Env,
   row: FileRow,
   next: StaticSiteFileBlob,
-): Promise<{ version: number; sizeBytes: number; updatedAt: number }> {
-  await writeManifest(env, row.id, next);
+): Promise<{ version: number; sizeBytes: number; updatedAt: number } | null> {
   const totalBytes = next.assets.reduce((a, b) => a + b.size, 0);
   const updatedAt = now();
-  const version = row.version + 1;
-  await filesRepo.updateMeta(env, row.owner, row.id, {
-    version,
-    size_bytes: totalBytes,
-    updated_at: updatedAt,
+  const version = await filesRepo.claimVersion(env, row.owner, row.id, {
+    expectedVersion: row.version,
+    sizeBytes: totalBytes,
+    updatedAt,
   });
+  if (version === null) return null;
+  await writeManifest(env, row.id, next);
   return { version, sizeBytes: totalBytes, updatedAt };
 }
 

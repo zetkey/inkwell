@@ -4,7 +4,7 @@
 // function name says otherwise (`…IncludingTrashed`). Trash-aware code
 // lives in `services/trash.ts`.
 
-import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Env, FileMeta, FileRow } from "../../types";
 import { getDb, t } from "../client";
 import { notTrashed } from "../filters";
@@ -134,6 +134,40 @@ export async function idsOwnedBy(env: Env, owner: string, ids: string[]): Promis
 export async function insert(env: Env, row: FileRow): Promise<void> {
   const db = getDb(env);
   await db.insert(t.files).values(row).run();
+}
+
+/** Atomically advance `version` (and the blob-derived fields) by one.
+ *
+ *  One conditional UPDATE, so concurrent saves cannot both succeed: pass
+ *  `expectedVersion` (the client's `If-Match`) and only the writer whose
+ *  version still matches gets a new version back; everyone else gets
+ *  `null` and must reload. With no `expectedVersion` the bump is still
+ *  atomic — it just doesn't lose to a version check.
+ *
+ *  Returns the new version, or `null` when no row matched.
+ */
+export async function claimVersion(
+  env: Env,
+  owner: string,
+  id: string,
+  patch: { expectedVersion?: number; sizeBytes: number; updatedAt: number },
+): Promise<number | null> {
+  const db = getDb(env);
+  const conds = [eq(t.files.id, id), eq(t.files.owner, owner)];
+  if (patch.expectedVersion !== undefined) {
+    conds.push(eq(t.files.version, patch.expectedVersion));
+  }
+  const row = await db
+    .update(t.files)
+    .set({
+      version: sql`${t.files.version} + 1`,
+      size_bytes: patch.sizeBytes,
+      updated_at: patch.updatedAt,
+    })
+    .where(and(...conds))
+    .returning({ version: t.files.version })
+    .get();
+  return row?.version ?? null;
 }
 
 export async function updateMeta(
