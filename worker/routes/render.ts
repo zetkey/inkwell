@@ -221,6 +221,12 @@ export function assetSecurityHeaders(contentType: string): Headers {
   headers.set("x-content-type-options", "nosniff");
   headers.set("x-frame-options", "SAMEORIGIN");
   headers.set("referrer-policy", "no-referrer");
+  // The sandbox gives the document an opaque origin, so its own module
+  // scripts, fetches and `@font-face` loads are cross-origin requests
+  // and would fail CORS without this. No `allow-credentials`: opaque
+  // origins have no cookies to send, and the wildcard must not be
+  // combinable with credentials.
+  headers.set("access-control-allow-origin", "*");
   headers.set(
     "content-security-policy",
     "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads; " +

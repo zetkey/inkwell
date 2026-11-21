@@ -251,9 +251,13 @@ export async function putFileBlob(env: Env, row: FileRow, req: Request): Promise
   try {
     await writeR2Blob(env, row.id, buf);
   } catch {
-    // The claim already advanced `version`, so the stored blob still
-    // holds the previous content: report it instead of handing the
-    // client a success it would cache.
+    // Roll the claim back so the client can retry with the same
+    // `If-Match` instead of a 409 against a write that never happened.
+    await filesRepo.releaseVersion(env, row.owner, row.id, {
+      expectedVersion: nextVersion,
+      sizeBytes: row.size_bytes,
+      updatedAt: row.updated_at,
+    });
     return errorResponse(500, "blob write failed; stored content was not updated");
   }
 

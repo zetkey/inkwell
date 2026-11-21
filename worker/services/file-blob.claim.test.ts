@@ -3,11 +3,13 @@ import type { Env, FileRow } from "../types";
 
 const mocks = vi.hoisted(() => ({
   claimVersion: vi.fn(),
+  releaseVersion: vi.fn(),
   findById: vi.fn(),
 }));
 
 vi.mock("../db/repos/files", () => ({
   claimVersion: mocks.claimVersion,
+  releaseVersion: mocks.releaseVersion,
   findById: mocks.findById,
 }));
 vi.mock("../db/repos/tags", () => ({ listForEntity: async () => [] }));
@@ -35,10 +37,11 @@ function row(overrides: Partial<FileRow> = {}): FileRow {
   };
 }
 
-function fakeEnv(puts: string[]): Env {
+function fakeEnv(puts: string[], failPut = false): Env {
   return {
     R2: {
       put: async (key: string) => {
+        if (failPut) throw new Error("R2 unavailable");
         puts.push(key);
       },
     },
@@ -49,6 +52,7 @@ const body = JSON.stringify({ elements: [], appState: {}, files: {} });
 
 beforeEach(() => {
   mocks.claimVersion.mockReset();
+  mocks.releaseVersion.mockReset();
   mocks.findById.mockReset();
 });
 
@@ -100,5 +104,47 @@ describe("putFileBlob version claim", () => {
     );
     const json = (await res.json()) as { version: number };
     expect(json.version).toBe(4);
+  });
+});
+
+describe("putFileBlob rollback", () => {
+  it("releases the claim when the R2 write fails", async () => {
+    mocks.claimVersion.mockResolvedValue(4);
+    const puts: string[] = [];
+    const env = fakeEnv(puts, true);
+    const req = new Request("https://inkwell.test/api/files/file-1", {
+      method: "PUT",
+      headers: { "if-match": '"3"' },
+      body,
+    });
+
+    const res = await putFileBlob(env, row(), req);
+
+    expect(res.status).toBe(500);
+    expect(puts).toEqual([]);
+    expect(mocks.releaseVersion).toHaveBeenCalledWith(
+      env,
+      "user-1",
+      "file-1",
+      expect.objectContaining({
+        expectedVersion: 4,
+        sizeBytes: 128,
+        updatedAt: 2,
+      }),
+    );
+  });
+
+  it("does not release the claim on success", async () => {
+    mocks.claimVersion.mockResolvedValue(4);
+    const env = fakeEnv([]);
+
+    const res = await putFileBlob(
+      env,
+      row(),
+      new Request("https://inkwell.test/api/files/file-1", { method: "PUT", body }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mocks.releaseVersion).not.toHaveBeenCalled();
   });
 });

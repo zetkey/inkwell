@@ -467,18 +467,23 @@ export async function deletePendingPaths(env: Env, id: string, paths: string[]):
   }
 }
 
-/** Commit a manifest + bump the file row's `version`, `size_bytes`,
- *  and `updated_at`. Returns the new version, or `null` when another
- *  writer already advanced the row (caller → 409).
+export interface ManifestClaim {
+  version: number;
+  sizeBytes: number;
+  updatedAt: number;
+}
+
+/** Claim the next manifest version *without* touching R2.
  *
- *  The claim is one conditional UPDATE taken *before* the manifest
- *  write, so two concurrent asset mutations on the same base version
- *  cannot both land — the loser leaves the manifest untouched. */
-export async function commitManifest(
+ *  Asset-mutating routes call this first so a lost race leaves the stored
+ *  manifest and assets untouched; they then write R2 and finish with
+ *  `writeManifest`. Returns null when another writer already advanced the
+ *  row (caller → 409). */
+export async function claimManifestVersion(
   env: Env,
   row: FileRow,
   next: StaticSiteFileBlob,
-): Promise<{ version: number; sizeBytes: number; updatedAt: number } | null> {
+): Promise<ManifestClaim | null> {
   const totalBytes = next.assets.reduce((a, b) => a + b.size, 0);
   const updatedAt = now();
   const version = await filesRepo.claimVersion(env, row.owner, row.id, {
@@ -487,8 +492,43 @@ export async function commitManifest(
     updatedAt,
   });
   if (version === null) return null;
-  await writeManifest(env, row.id, next);
   return { version, sizeBytes: totalBytes, updatedAt };
+}
+
+/** Undo a claim whose R2 work failed. Conditional on the row still being
+ *  at the claimed version, so a later writer is never rolled back. */
+export async function releaseManifestClaim(
+  env: Env,
+  row: FileRow,
+  claim: ManifestClaim,
+): Promise<void> {
+  await filesRepo.releaseVersion(env, row.owner, row.id, {
+    expectedVersion: claim.version,
+    sizeBytes: row.size_bytes,
+    updatedAt: row.updated_at,
+  });
+}
+
+/** Commit a manifest + bump the file row's version, size, updated_at.
+ *
+ *  Claim first, write the manifest second, and roll the claim back if the
+ *  write throws — a failed commit must not leave `version` ahead of the
+ *  stored manifest. Returns the new version, or `null` when another writer
+ *  already advanced the row (caller → 409). */
+export async function commitManifest(
+  env: Env,
+  row: FileRow,
+  next: StaticSiteFileBlob,
+): Promise<ManifestClaim | null> {
+  const claim = await claimManifestVersion(env, row, next);
+  if (!claim) return null;
+  try {
+    await writeManifest(env, row.id, next);
+  } catch (e) {
+    await releaseManifestClaim(env, row, claim);
+    throw e;
+  }
+  return claim;
 }
 
 // ─── Seed initial asset for a brand-new static-site ────────────────

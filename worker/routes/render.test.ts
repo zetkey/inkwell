@@ -19,6 +19,16 @@ describe("static-site asset headers", () => {
     expect(csp).not.toContain("allow-same-origin");
   });
 
+  it("allows cross-origin subresources for the opaque origin, without credentials", () => {
+    const headers = assetSecurityHeaders("text/html");
+
+    expect(headers.get("access-control-allow-origin")).toBe("*");
+    expect(headers.get("access-control-allow-credentials")).toBeNull();
+    // Cookie safety comes from the sandbox, so it must survive the CORS header.
+    expect(headers.get("content-security-policy")).toContain("sandbox ");
+    expect(headers.get("content-security-policy")).not.toContain("allow-same-origin");
+  });
+
   it("keeps the framing and sniffing guards", () => {
     const headers = assetSecurityHeaders("text/html");
 

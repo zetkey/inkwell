@@ -154,6 +154,33 @@ export async function claimVersion(
   return row?.version ?? null;
 }
 
+/** Undo a `claimVersion` whose R2 work failed.
+ *
+ *  Conditional on the row still being at the version this claim produced
+ *  (`expectedVersion`), so a writer that advanced the row afterwards is
+ *  never rolled back. Restores the blob-derived fields to their
+ *  pre-claim values. Returns true when the rollback landed. */
+export async function releaseVersion(
+  env: Env,
+  owner: string,
+  id: string,
+  patch: { expectedVersion: number; sizeBytes: number; updatedAt: number },
+): Promise<boolean> {
+  const db = getDb(env);
+  const result = await db
+    .update(t.files)
+    .set({
+      version: sql`${t.files.version} - 1`,
+      size_bytes: patch.sizeBytes,
+      updated_at: patch.updatedAt,
+    })
+    .where(
+      and(eq(t.files.id, id), eq(t.files.owner, owner), eq(t.files.version, patch.expectedVersion)),
+    )
+    .run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
 export async function updateMeta(
   env: Env,
   owner: string,

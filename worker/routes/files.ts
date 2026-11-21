@@ -42,18 +42,20 @@ import {
   applyReplaceAll,
   applySetEntry,
   applyUpserts,
+  claimManifestVersion,
   commitManifest,
   contentTypeForPath,
-  deleteAllStaticSiteAssets,
   deletePendingPaths,
   MAX_SITE_ASSET_BYTES,
   MAX_SITE_ASSET_COUNT,
   MAX_SITE_TOTAL_BYTES,
   type PendingAsset,
   readManifest,
+  releaseManifestClaim,
   StaticSiteError,
   unzipSite,
   validateAssetPath,
+  writeManifest,
   writePendingAssets,
 } from "../services/static-site";
 import { trashItems } from "../services/trash";
@@ -412,9 +414,12 @@ r.get("/:id/thumb", async (c) => {
 //   3. (`If-Match` precheck, mirroring the existing PUT contract.)
 //   4. Mutate the manifest in memory via a `static-site.ts` helper
 //      (throws `StaticSiteError` on validation failure).
-//   5. Write any R2 objects (or remove them).
-//   6. `commitManifest` writes the new manifest and bumps `version`,
-//      `size_bytes`, `updated_at` on the row.
+//   5. Claim the next `version` (`claimManifestVersion`) — a lost race
+//      returns 409 before any R2 write.
+//   6. Publish the manifest and move the R2 objects: zip/delete write
+//      the manifest first and touch assets around it (see each route);
+//      upsert/entry use `commitManifest`, which claims and writes in one
+//      step. A failed write rolls the claim back.
 //   7. Return the refreshed `FileMeta` plus the new manifest.
 
 async function loadStaticSite(
@@ -622,13 +627,31 @@ r.post("/:id/assets/zip", async (c) => {
     throw e;
   }
 
-  // Drop the old R2 objects, then write the new ones. Failures during
-  // the bulk delete are best-effort (the next site delete cleans up).
-  await deleteAllStaticSiteAssets(c.env, id);
-  await writePendingAssets(c.env, id, pending);
-  const committed = await commitManifest(c.env, row, nextManifest);
-  if (!committed) return errorResponse(409, "version mismatch");
-  return siteResponse(c.env, owner, row, nextManifest, committed);
+  // Claim before any R2 mutation: a lost race must leave the old site
+  // byte-for-byte intact, so the 409 path never writes or deletes.
+  const claim = await claimManifestVersion(c.env, row, nextManifest);
+  if (!claim) return errorResponse(409, "version mismatch");
+
+  try {
+    // Overwrite in place, then publish the manifest. Existing paths are
+    // simply replaced; leftovers are removed after the manifest landed.
+    await writePendingAssets(c.env, id, pending);
+    await writeManifest(c.env, id, nextManifest);
+  } catch {
+    await releaseManifestClaim(c.env, row, claim);
+    return errorResponse(500, "site update failed; the previous manifest is still in place");
+  }
+
+  // Best-effort cleanup of assets the new manifest no longer references
+  // (`deletePendingPaths` never throws). A failed delete leaves orphan
+  // R2 objects, never a manifest pointing at missing bytes.
+  const nextPaths = new Set(nextManifest.assets.map((a) => a.path));
+  await deletePendingPaths(
+    c.env,
+    id,
+    manifest.assets.map((a) => a.path).filter((p) => !nextPaths.has(p)),
+  );
+  return siteResponse(c.env, owner, row, nextManifest, claim);
 });
 
 // DELETE /api/files/:id/assets/:path{.+} — remove one asset by
@@ -659,10 +682,19 @@ r.delete("/:id/assets/:path{.+}", async (c) => {
     throw e;
   }
 
+  // Claim first, then publish the manifest, and only then delete the
+  // object: a lost race or a failed write leaves the old manifest
+  // pointing at bytes that still exist.
+  const claim = await claimManifestVersion(c.env, row, nextManifest);
+  if (!claim) return errorResponse(409, "version mismatch");
+  try {
+    await writeManifest(c.env, id, nextManifest);
+  } catch {
+    await releaseManifestClaim(c.env, row, claim);
+    return errorResponse(500, "site update failed; the previous manifest is still in place");
+  }
   await deletePendingPaths(c.env, id, [path]);
-  const committed = await commitManifest(c.env, row, nextManifest);
-  if (!committed) return errorResponse(409, "version mismatch");
-  return siteResponse(c.env, owner, row, nextManifest, committed);
+  return siteResponse(c.env, owner, row, nextManifest, claim);
 });
 
 // POST /api/files/:id/render-session — mint a short-lived signed URL
