@@ -6,13 +6,15 @@
 // isn't available, so we cover both in-app exits:
 //   • the back button / ⌘K route, which call `requestLeave(cont)` with
 //     their own continuation;
-//   • browser Back, which we catch on `popstate`: the browser has
-//     already moved, so we push the editor entry back (URL + router
-//     state) and let the dialog decide. The queued continuation then
-//     performs the navigation the user asked for.
+//   • browser Back, which we catch on `popstate`: the browser has already
+//     moved and the router has followed it, so we move back to the editor
+//     **through the router** and let the dialog decide. A raw
+//     `history.pushState` would leave the router on the destination, which
+//     unmounts the editor and never shows the dialog.
 // Tab close / hard reload still use the native `beforeunload` prompt.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 export type LeaveBusyState = false | "save";
 
@@ -42,6 +44,7 @@ export interface UseLeaveConfirmResult {
 
 export function useLeaveConfirm(opts: UseLeaveConfirmOptions): UseLeaveConfirmResult {
   const { isDirty, saveNow, discardPendingLocalWork } = opts;
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<LeaveBusyState>(false);
   const pendingRef = useRef<(() => void) | null>(null);
@@ -99,50 +102,29 @@ export function useLeaveConfirm(opts: UseLeaveConfirmOptions): UseLeaveConfirmRe
   }, [saveNow]);
 
   // ─── Browser Back guard ────────────────────────────────────────────
-  // The editor entry's URL + history state, captured while we're on it
-  // (after a popstate `window.location` is already the destination).
-  const hereRef = useRef<{ url: string; state: unknown } | null>(null);
-  // Destination we asked `history.back()` to reach; the popstate it
-  // causes must not open the dialog a second time.
-  const expectedDestRef = useRef<string | null>(null);
-  const lastUrlRef = useRef<string | null>(null);
-
+  // The editor's URL, captured while we are on it (after a popstate,
+  // `window.location` is already the destination).
+  const hereUrlRef = useRef<string | null>(null);
   useEffect(() => {
-    const url = window.location.pathname + window.location.search + window.location.hash;
-    // Only a real location change drops an expected destination: the
-    // dialog closing re-renders while the continuation's popstate is
-    // still on its way, and clearing it there would re-arm the guard.
-    if (lastUrlRef.current !== url) {
-      lastUrlRef.current = url;
-      expectedDestRef.current = null;
-    }
-    hereRef.current = { url, state: window.history.state };
+    hereUrlRef.current = window.location.pathname + window.location.search + window.location.hash;
   });
 
   useEffect(() => {
     const onPopState = () => {
-      const here = hereRef.current;
+      const here = hereUrlRef.current;
       if (!here || !dirtyRef.current || busyRef.current) return;
       const dest = window.location.pathname + window.location.search + window.location.hash;
-      if (dest === here.url) return;
-      if (expectedDestRef.current === dest) {
-        // This is the navigation the dialog's continuation asked for.
-        expectedDestRef.current = null;
-        return;
-      }
-      // Put the editor entry back (the router reads `window.location`
-      // live, so this keeps it on the editor) and let the dialog drive
-      // the real navigation afterwards. Idempotent: a second Back
-      // restores the same two entries.
-      window.history.pushState(here.state, "", here.url);
-      requestLeave(() => {
-        expectedDestRef.current = dest;
-        window.history.back();
-      });
+      if (dest === here) return;
+      // Restore the editor in the router so it stays mounted and the dialog
+      // can decide. `replace` keeps the history length unchanged; the
+      // continuation replaces the pending destination instead of pushing a
+      // second entry, so leaving does not grow the back stack.
+      navigate(here, { replace: true });
+      requestLeave(() => navigate(dest, { replace: true }));
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [requestLeave]);
+  }, [navigate, requestLeave]);
 
   return { open, busy, requestLeave, onOpenChange, cancel, discard, saveAndLeave };
 }

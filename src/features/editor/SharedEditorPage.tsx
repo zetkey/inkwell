@@ -71,38 +71,48 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
   const loadedRef = useRef(loaded);
   loadedRef.current = loaded;
 
-  // Force-fresh reload after a 409 conflict.
+  // Force-fresh reload after a 409 conflict. The working copy names the
+  // file (see `save`); a folder-share route param may already be the next
+  // file when this runs, so the fetch and the cache key follow `target`.
   const reload = useCallback(async () => {
-    const activeId = loadedRef.current?.meta.id ?? null;
+    const target = loadedRef.current?.meta.id ?? null;
+    if (!target) throw new Error("No active file to reload.");
+    const cacheKey = fileId ? keys.publicShare.token(token, target) : keys.publicShare.token(token);
     const ls = await qc.fetchQuery({
-      queryKey: keys.publicShare.token(token, fileId),
-      queryFn: () => (fileId ? shares.loadFolderFile(token, fileId) : shares.load(token)),
+      queryKey: cacheKey,
+      queryFn: () => (fileId ? shares.loadFolderFile(token, target) : shares.load(token)),
       staleTime: 0,
     });
-    // The lifecycle still gets `ls`; the working copy is only replaced
-    // when it is still the file this reload was for.
-    if (activeId !== null && loadedRef.current?.meta.id === activeId) {
+    if (loadedRef.current?.meta.id === target) {
       setLoaded(ls);
       setConflict(true);
     }
     return ls;
   }, [qc, token, fileId]);
+
   const save = useCallback(
     async (version: number, blob: FileBlob) => {
-      const savingId = loadedRef.current?.meta.id ?? null;
+      // Write the file the visitor actually has open, not the route param:
+      // on A→B this closure may already be B while the working copy (and
+      // the scene) is still A.
+      const target = loadedRef.current?.meta.id ?? null;
+      if (!aliveRef.current || !target) return { version };
       const m = fileId
-        ? await shares.saveFolderFile(token, fileId, version, blob)
+        ? await shares.saveFolderFile(token, target, version, blob)
         : await shares.save(token, version, blob);
       const prev = loadedRef.current;
+      const cacheKey = fileId
+        ? keys.publicShare.token(token, target)
+        : keys.publicShare.token(token);
       // The PUT succeeded, but the visitor may already be on another
-      // shared file (or gone). Don't write this scene into it.
-      if (!aliveRef.current || !savingId || prev?.meta.id !== savingId) {
-        qc.invalidateQueries({ queryKey: keys.publicShare.token(token, fileId), exact: true });
+      // shared file. Don't write this scene into it.
+      if (!prev || prev.meta.id !== target) {
+        qc.invalidateQueries({ queryKey: cacheKey, exact: true });
         return { version: m.version };
       }
       const nextLoaded: LoadedFile = {
         meta: {
-          id: savingId,
+          id: target,
           name: m.name,
           kind: m.kind,
           version: m.version,
@@ -117,8 +127,8 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
         sharedBy: prev.sharedBy,
         shareExpiresAt: prev.shareExpiresAt,
       };
-      setLoaded((cur) => (cur && cur.meta.id === savingId ? nextLoaded : cur));
-      qc.setQueryData(keys.publicShare.token(token, fileId), nextLoaded);
+      setLoaded((cur) => (cur && cur.meta.id === target ? nextLoaded : cur));
+      qc.setQueryData(cacheKey, nextLoaded);
       return { version: m.version };
     },
     [qc, token, fileId],

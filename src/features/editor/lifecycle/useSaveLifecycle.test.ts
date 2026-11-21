@@ -49,6 +49,40 @@ function harness(overrides?: Partial<{ readOnly: boolean }>) {
   };
 }
 
+/** Transport whose saves stay in flight until the test resolves them. */
+function deferredHarness() {
+  const saves: Array<{ version: number; blob: string }> = [];
+  const resolvers: Array<() => void> = [];
+  let latest: SaveSnapshot<string> = { fp: "a", blob: "A" };
+  const transport = {
+    save: vi.fn(
+      (version: number, blob: string) =>
+        new Promise<{ version: number }>((resolve) => {
+          saves.push({ version, blob });
+          resolvers.push(() => resolve({ version: version + 1 }));
+        }),
+    ),
+  };
+  const loop = new SaveLoop<string, Loaded>({
+    initialVersion: 3,
+    initialFingerprint: "0",
+    live: {
+      readOnly: false,
+      transport,
+      getLatest: () => latest,
+    },
+    onStatus: () => {},
+  });
+  return {
+    loop,
+    saves,
+    resolvers,
+    setLatest: (fp: string, blob: string) => {
+      latest = { fp, blob };
+    },
+  };
+}
+
 /** Let resolved promises / queued microtasks run under fake timers. */
 const settle = () => vi.advanceTimersByTimeAsync(0);
 
@@ -78,47 +112,54 @@ describe("SaveLoop", () => {
   });
 
   it("takes another lap when an edit lands during an in-flight save", async () => {
-    const saves: Array<{ version: number; blob: string }> = [];
-    const resolvers: Array<() => void> = [];
-    const transport = {
-      save: vi.fn(
-        (version: number, blob: string) =>
-          new Promise<{ version: number }>((resolve) => {
-            saves.push({ version, blob });
-            resolvers.push(() => resolve({ version: version + 1 }));
-          }),
-      ),
-    };
-    let latest: SaveSnapshot<string> = { fp: "a", blob: "A" };
-    const loop = new SaveLoop<string, Loaded>({
-      initialVersion: 3,
-      initialFingerprint: "0",
-      live: {
-        readOnly: false,
-        transport,
-        getLatest: () => latest,
-      },
-      onStatus: () => {},
-    });
+    const h = deferredHarness();
 
-    loop.notifyChange();
+    h.loop.notifyChange();
     await vi.advanceTimersByTimeAsync(30_000);
-    expect(saves).toEqual([{ version: 3, blob: "A" }]);
+    expect(h.saves).toEqual([{ version: 3, blob: "A" }]);
 
-    latest = { fp: "b", blob: "B" };
-    loop.notifyChange();
+    h.setLatest("b", "B");
+    h.loop.notifyChange();
 
-    resolvers[0]();
+    h.resolvers[0]();
     await settle();
-    expect(saves[1]).toEqual({ version: 4, blob: "B" });
+    expect(h.saves[1]).toEqual({ version: 4, blob: "B" });
 
-    resolvers[1]();
+    h.resolvers[1]();
     await settle();
-    expect(saves).toHaveLength(2);
+    expect(h.saves).toHaveLength(2);
 
-    loop.dispose();
+    h.loop.dispose();
     await settle();
-    expect(saves).toHaveLength(2);
+    expect(h.saves).toHaveLength(2);
+  });
+
+  it("finishes the in-flight lap even when the editor unmounted", async () => {
+    const h = deferredHarness();
+
+    h.loop.notifyChange();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(h.saves).toEqual([{ version: 3, blob: "A" }]);
+
+    // The user typed while the PUT was in flight, then navigated away.
+    h.setLatest("b", "B");
+    h.loop.notifyChange();
+    h.loop.dispose();
+
+    h.resolvers[0]();
+    await settle();
+    expect(h.saves[1]).toEqual({ version: 4, blob: "B" });
+
+    h.resolvers[1]();
+    await settle();
+    expect(h.saves).toHaveLength(2);
+
+    // The loop is done; nothing more is PUT after the unmount.
+    h.setLatest("c", "C");
+    h.loop.notifyChange();
+    await vi.advanceTimersByTimeAsync(60_000);
+    await settle();
+    expect(h.saves).toHaveLength(2);
   });
 
   it("reloads on 409, raises the version baseline, and stops writing the stale scene", async () => {

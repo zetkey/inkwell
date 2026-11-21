@@ -141,7 +141,8 @@ export class SaveLoop<TBlob, TLoaded extends { meta: { version: number } }> {
   }
 
   /** Unmount: run the pending save (last chance for the edits the user
-   *  navigated away from), then stop taking further laps. */
+   *  navigated away from) and stop accepting new changes; a lap already
+   *  in flight still finishes so its newest snapshot is persisted. */
   dispose(): void {
     this.flush();
     this.disposed = true;
@@ -219,11 +220,11 @@ export class SaveLoop<TBlob, TLoaded extends { meta: { version: number } }> {
             return false;
           }
 
-          // Lap done. Exit when nothing newer arrived meanwhile, when the
-          // editor unmounted (its pending work is already persisted), or
-          // otherwise loop and persist the newer snapshot too.
+          // Lap done. Exit when nothing newer arrived meanwhile; otherwise
+          // loop and persist the newer snapshot too — including the edit
+          // that landed while this PUT was in flight after an unmount.
           const next = this.live.getLatest();
-          if (!next || next.fp === this.savedFp || this.disposed) {
+          if (!next || next.fp === this.savedFp) {
             this.setStatus("saved", null);
             return true;
           }

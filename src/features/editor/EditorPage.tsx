@@ -177,20 +177,21 @@ export function EditorPage() {
   }, []);
 
   // Reload after a 409 conflict: bypass cache and force a fresh fetch.
-  // Only the save lifecycle's conflict path calls this.
+  // Only the save lifecycle's conflict path calls this. The working copy
+  // names the file (see `save`); the route param may already be the next
+  // file when this runs.
   const reload = useCallback(async () => {
+    const target = loadedRef.current?.meta.id ?? null;
+    if (!target) throw new Error("No active file to reload.");
     const ls = await qc.fetchQuery({
-      queryKey: keys.files.detail(id),
-      queryFn: () => files.load(id),
+      queryKey: keys.files.detail(target),
+      queryFn: () => files.load(target),
       staleTime: 0,
     });
-    // The lifecycle still gets `ls`, but the working copy is only replaced
-    // when it still belongs to this file — a reload that lands after the
-    // route moved on must not overwrite the new file.
-    setLoaded((prev) => (prev && prev.meta.id === id ? ls : prev));
-    if (loadedRef.current?.meta.id === id) setConflict(true);
+    setLoaded((prev) => (prev && prev.meta.id === target ? ls : prev));
+    if (loadedRef.current?.meta.id === target) setConflict(true);
     return ls;
-  }, [qc, id]);
+  }, [qc]);
 
   // Save: throws ApiError(409) on version conflict so the editor's
   // autosave loop can react. On success update both local state and the
@@ -198,19 +199,24 @@ export function EditorPage() {
   // an old version from React Query's staleTime/gcTime Infinity cache.
   const save = useCallback(
     async (version: number, blob: FileBlob) => {
-      const m = await files.save(id, version, blob);
+      // The PUT must land on the file whose scene the editor holds — the
+      // working copy, not the route param: on A→B this closure is already
+      // B while the editor still shows A, and a flush would overwrite B
+      // with A's scene when the versions happen to match.
+      const target = loadedRef.current?.meta.id ?? null;
+      if (!aliveRef.current || !target) return { version };
+      const m = await files.save(target, version, blob);
       const prev = loadedRef.current;
-      // The PUT succeeded, but the working copy may already belong to a
-      // different file (or the page unmounted). Writing this scene into
-      // it would corrupt what's on screen; invalidate instead so a
-      // revisit refetches the saved version.
-      if (!aliveRef.current || !prev || prev.meta.id !== id) {
-        qc.invalidateQueries({ queryKey: keys.files.detail(id), exact: true });
+      // The PUT succeeded, but the working copy may have moved on. Writing
+      // this scene into it would corrupt what's on screen; invalidate
+      // instead so a revisit refetches the saved version.
+      if (!prev || prev.meta.id !== target) {
+        qc.invalidateQueries({ queryKey: keys.files.detail(target), exact: true });
         return { version: m.version };
       }
       const nextLoaded: LoadedFile = {
         meta: {
-          id,
+          id: target,
           name: m.name,
           kind: m.kind,
           version: m.version,
@@ -228,17 +234,17 @@ export function EditorPage() {
         sharedBy: null,
         shareExpiresAt: null,
       };
-      setLoaded((cur) => (cur && cur.meta.id === id ? nextLoaded : cur));
-      qc.setQueryData(keys.files.detail(id), nextLoaded);
+      setLoaded((cur) => (cur && cur.meta.id === target ? nextLoaded : cur));
+      qc.setQueryData(keys.files.detail(target), nextLoaded);
       // Update cached file-list rows so explorer views show fresh data.
       // Scope to list queries only — invalidating `keys.files.all` would
-      // also match `keys.files.detail(id)` (prefix match) and trigger a
+      // also match `keys.files.detail(target)` (prefix match) and trigger a
       // refetch of the active file on every save.
       qc.invalidateQueries({ queryKey: ["files", "list"] });
       qc.invalidateQueries({ queryKey: ["folders", "list"] });
       return { version: m.version };
     },
-    [id, qc],
+    [qc],
   );
 
   const saveThumb = useCallback((svg: string) => files.putThumb(id, svg), [id]);
