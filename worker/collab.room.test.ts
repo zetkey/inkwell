@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   CollabRoom,
   MAX_FRAME_CHARS,
@@ -201,29 +201,40 @@ describe("CollabRoom limits", () => {
   });
 
   it("throttles a socket that floods messages", () => {
-    const a = socket(peer("a"), 1);
-    const b = socket(peer("b"), 2);
-    const r = room([a, b]);
-    const frame = JSON.stringify({ t: "elements", elements: [{ id: "el" }] });
+    // Frozen clock: a slow CI box must not let the 1 s window lapse mid-loop.
+    vi.useFakeTimers();
+    try {
+      const a = socket(peer("a"), 1);
+      const b = socket(peer("b"), 2);
+      const r = room([a, b]);
+      const frame = JSON.stringify({ t: "elements", elements: [{ id: "el" }] });
 
-    for (let i = 0; i < 45; i++) r.webSocketMessage(a.ws, frame);
+      for (let i = 0; i < 45; i++) r.webSocketMessage(a.ws, frame);
 
-    const errors = frames(a.sent).filter((f) => f.message === "too many messages");
-    const relays = b.sent.length;
-    expect(errors).toHaveLength(5);
-    expect(relays).toBe(RATE_LIMIT_MAX_MESSAGES);
+      const errors = frames(a.sent).filter((f) => f.message === "too many messages");
+      const relays = b.sent.length;
+      expect(errors).toHaveLength(5);
+      expect(relays).toBe(RATE_LIMIT_MAX_MESSAGES);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("processes a normal burst of 20 messages", () => {
-    const a = socket(peer("a"), 1);
-    const b = socket(peer("b"), 2);
-    const r = room([a, b]);
-    const frame = JSON.stringify({ t: "elements", elements: [{ id: "el" }] });
+    vi.useFakeTimers();
+    try {
+      const a = socket(peer("a"), 1);
+      const b = socket(peer("b"), 2);
+      const r = room([a, b]);
+      const frame = JSON.stringify({ t: "elements", elements: [{ id: "el" }] });
 
-    for (let i = 0; i < 20; i++) r.webSocketMessage(a.ws, frame);
+      for (let i = 0; i < 20; i++) r.webSocketMessage(a.ws, frame);
 
-    expect(a.sent).toEqual([]);
-    expect(b.sent).toHaveLength(20);
+      expect(a.sent).toEqual([]);
+      expect(b.sent).toHaveLength(20);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects elements whose id is not a string", () => {
