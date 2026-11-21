@@ -2,19 +2,21 @@ import { describe, expect, it } from "vitest";
 import { guestIdentity } from "./collab";
 
 const NAME = /^[a-z]+(_[a-z]+)+$/;
+const GUEST_ID = /^guest:[0-9a-hjkmnp-tv-z]{16}$/;
 
 describe("guestIdentity", () => {
-  it("keeps the token-derived peer id", () => {
+  it("mints a fresh per-connection id, never the token", () => {
     const token = "abcdefghijklmnopqrstuvwxyz012345";
-    expect(guestIdentity(token).id).toBe(`share:${token}`);
-    expect(guestIdentity(token).id).toBe(`share:${token}`);
+    const a = guestIdentity();
+    expect(a.id).toMatch(GUEST_ID);
+    expect(a.id).not.toContain(token);
+    // Two connections on the same share link must be distinct peers.
+    expect(guestIdentity().id).not.toBe(a.id);
   });
 
-  it("uses a random animal name, never the token itself", () => {
-    const token = "XYZ0123456789";
-    const { name } = guestIdentity(token);
+  it("uses a random animal name", () => {
+    const { name } = guestIdentity();
     expect(name).toMatch(NAME);
     expect(name.length).toBeLessThanOrEqual(40);
-    expect(name).not.toContain(token.toLowerCase());
   });
 });

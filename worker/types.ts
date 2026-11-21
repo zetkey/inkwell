@@ -131,16 +131,18 @@ export type FolderRow = InferSelectModel<typeof t.folders>;
 // what the card needs — not the full FileMeta.
 export type FileKind = "excalidraw" | "drawio" | "notes" | "static-site" | "file";
 
-/** Coerce arbitrary user input to a valid *creatable* FileKind (a kind
- *  that can be seeded from JSON). `"file"` is deliberately not accepted:
- *  uploaded files are created only through `POST /api/files/upload`.
- *  Anything that isn't an explicit known variant collapses to
- *  "excalidraw" — the default file type. This is the single boundary where untrusted
- *  `kind` values become typed. */
+/** Coerce arbitrary user input to a known FileKind. `"file"` (generic
+ *  uploaded bytes) is recognised here so callers can tell it apart and
+ *  refuse it where a JSON seed would be needed — uploads are created only
+ *  through `POST /api/files/upload`, never by `createFile`. Anything that
+ *  isn't an explicit known variant collapses to "excalidraw", the default
+ *  file type. This is the single boundary where untrusted `kind` values
+ *  become typed. */
 export function normalizeFileKind(input: unknown): FileKind {
   if (input === "drawio") return "drawio";
   if (input === "notes") return "notes";
   if (input === "static-site") return "static-site";
+  if (input === "file") return "file";
   return "excalidraw";
 }
 

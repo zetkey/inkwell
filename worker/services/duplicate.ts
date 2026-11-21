@@ -309,8 +309,10 @@ export async function duplicateItems(
 
   // ── One D1 transaction for all rows ──
   // Multi-row INSERTs chunked to stay under D1's 100-bound-parameter cap.
+  // `folders` has 14 columns (7 rows = 98 params), `files` 15 (6 = 90) and
+  // `taggings` 5 (18 = 90); one row more in any of them exceeds the cap.
   const stmts: SqliteBatchItem[] = [
-    ...chunk(newFolders, 10).map((rows) => db.insert(t.folders).values(rows)),
+    ...chunk(newFolders, 7).map((rows) => db.insert(t.folders).values(rows)),
     ...chunk(
       plans.map((p) => p.row),
       6,

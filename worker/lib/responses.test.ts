@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { FileRow } from "../types";
 import {
   isActiveMime,
+  MAX_SITE_ZIP_ASSETS,
   MAX_SITE_ZIP_BYTES,
   safeMime,
   serveThumb,
@@ -154,6 +155,42 @@ describe("streamFileResponse static-site ZIP", () => {
 
     expect(res.status).toBe(413);
     expect(reads).toEqual(["scenes/file-1.json"]);
+  });
+
+  it("refuses a site with too many assets before reading any asset", async () => {
+    const reads: string[] = [];
+    const assets = Array.from({ length: MAX_SITE_ZIP_ASSETS + 1 }, (_, i) => ({
+      path: `a${i}.txt`,
+      size: 1,
+    }));
+    const env = siteEnv(siteManifest(assets), {}, reads);
+
+    const res = await streamFileResponse(env, row({ kind: "static-site" }), { download: true });
+
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({
+      error: `site has too many files to ZIP (max ${MAX_SITE_ZIP_ASSETS}); open the site URL to download assets individually`,
+    });
+    expect(reads).toEqual(["scenes/file-1.json"]);
+  });
+
+  it("still ZIPs a site at exactly the asset cap", async () => {
+    const assets = Array.from({ length: MAX_SITE_ZIP_ASSETS }, (_, i) => ({
+      path: `a${i}.txt`,
+      size: 1,
+    }));
+    const bytes = Object.fromEntries(
+      assets.map((a) => [`static-sites/file-1/${a.path}`, new Uint8Array([65])]),
+    );
+    const res = await streamFileResponse(
+      siteEnv(siteManifest(assets), bytes, []),
+      row({ kind: "static-site" }),
+      { download: true },
+    );
+
+    expect(res.status).toBe(200);
+    const zipped = unzipSync(new Uint8Array(await res.arrayBuffer()));
+    expect(Object.keys(zipped)).toHaveLength(MAX_SITE_ZIP_ASSETS);
   });
 });
 

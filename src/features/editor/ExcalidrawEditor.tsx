@@ -68,8 +68,6 @@ export interface ExcalidrawEditorProps {
    *  invalidate scene/folder list queries so explorer cards re-render
    *  with the new `thumbUpdatedAt` cache-bust token. */
   onThumbSaved?: () => void;
-  /** Called after each successful reload following a 409. */
-  onReload?: (loaded: LoadedFile) => void;
   /** Function to re-fetch the scene from the server (used after a 409). */
   reload?: () => Promise<LoadedFile>;
   /**
@@ -91,6 +89,8 @@ export interface ExcalidrawEditorProps {
    * editable but have no collab route, so a socket would 401 forever.
    */
   collabEnabled?: boolean;
+  /** Fired when a save hits 409; the page opens its conflict banner. */
+  onConflict?: () => void;
 }
 
 export default function ExcalidrawEditor({
@@ -98,12 +98,12 @@ export default function ExcalidrawEditor({
   save,
   saveThumb,
   onThumbSaved,
-  onReload,
   reload,
   chrome,
   renderHeader,
   collabPath,
   collabEnabled = true,
+  onConflict,
 }: ExcalidrawEditorProps) {
   // Excalidraw invokes this callback synchronously from its class constructor.
   // Keeping the API in state would update this parent while its child is still
@@ -136,6 +136,11 @@ export default function ExcalidrawEditor({
   // hook reads this through `getLatest()` whenever it needs to
   // serialise a save.
   const latestSnapshotRef = useRef<ExcalidrawSnapshot | null>(initialSnapshot);
+  // Latest server version, read by the reset effect without making it a
+  // dependency: our own saves bump it, and re-running the reset there
+  // would discard the baseline (see the effect's comment).
+  const loadedVersionRef = useRef(loaded.meta.version);
+  loadedVersionRef.current = loaded.meta.version;
   // `collab` links are editable; only `read` is view-only. (The PR's
   // `!== "write"` treated collab links as read-only, which would mute
   // both the canvas and the realtime socket.)
@@ -188,31 +193,25 @@ export default function ExcalidrawEditor({
         return renderExcalidrawThumbSvg(snap.elements, snap.appState, snap.files);
       });
     },
-    onReload: (fresh) => {
-      onReload?.(fresh);
-    },
+    onConflict,
   });
 
-  // Reset when a *different* scene is loaded — either navigating to
-  // another file or after a 409 forces a re-fetch. We deliberately key
-  // on the `loaded.blob` reference, not on `loaded.meta.version`: the
-  // parent bumps `meta.version` after every successful save (while
-  // keeping the same blob reference), and re-seeding `savedFp` from
-  // the original blob on every bump would defeat dedup — every
-  // onChange would compare against a stale baseline and force a
-  // redundant save, and so on. The blob reference is stable across
-  // save-version bumps and only changes when a fresh `LoadedFile` is
-  // set (initial mount, scene navigation, post-409 reload).
+  // Reset only when a *different* scene blob is loaded — initial mount,
+  // scene navigation, or an explicit conflict reload that fetches a new
+  // server copy. `loaded.blob` is intentionally the sole trigger: the
+  // parent keeps the previous blob reference across its own saves (only
+  // meta/version change), so a save never re-baselines the canvas and
+  // cannot swallow the next edit as "already saved".
   useEffect(() => {
     const nextSnapshot = normalizedSnapshot(loaded.blob as ExcalidrawFileBlob);
     baselinedRef.current = false;
     latestSnapshotRef.current = nextSnapshot;
     thumb.reset();
-    lifecycle.reset(loaded.meta.version, nextSnapshot.fp);
+    lifecycle.reset(loadedVersionRef.current, nextSnapshot.fp);
     // `lifecycle.reset` and `thumb.reset` are stable across renders
     // (both are useCallback'd against stable refs), so depending on
     // them is harmless.
-  }, [loaded.blob, loaded.meta.version, lifecycle.reset, thumb.reset]);
+  }, [loaded.blob, lifecycle.reset, thumb.reset]);
 
   // Keep Excalidraw's internal appState.name in sync with the
   // canonical scene name. Purely cosmetic: it drives Excalidraw's

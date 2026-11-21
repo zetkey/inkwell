@@ -36,6 +36,12 @@ import { emptyManifest, validateManifest, writeSeedSite } from "./static-site";
 export const MAX_FILE_BYTES = 4 * 1024 * 1024;
 export const MAX_THUMB_BYTES = 1 * 1024 * 1024;
 
+/** Cap for a generic uploaded file (`kind: "file"`). Unlike the JSON blob
+ *  cap above, these bytes are streamed straight to R2 and never parsed, so
+ *  the CPU budget is not the constraint — the platform's 100 MB request
+ *  body limit is. Matches the client's `MAX_FILE_UPLOAD_BYTES`. */
+export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+
 // ─── Blob construction ──────────────────────────────────────────────
 //
 // Two-phase seeding:
@@ -106,7 +112,11 @@ export function validateBlobForKind(kind: FileKind, parsed: FileBlob): string | 
       if (!isStaticSiteBlob(parsed)) return "static-site blob shape invalid";
       return validateManifest(parsed as StaticSiteFileBlob);
     case "file":
-      return "uploaded files are not editable as JSON";
+      // Uploaded files hold arbitrary binary bytes and have no JSON blob
+      // to validate. `putFileBlob` refuses them before this runs, so
+      // returning "no error" keeps the validator total over `FileKind`
+      // without opening a JSON write path.
+      return null;
     default:
       return assertNever(kind);
   }
@@ -207,6 +217,11 @@ export async function putFileBlob(env: Env, row: FileRow, req: Request): Promise
   // manifest PUT here would let a client desync the two.
   if (row.kind === "static-site") {
     return errorResponse(400, "static-site files are managed via /api/files/:id/assets endpoints");
+  }
+  // An uploaded file's bytes are opaque binary — a JSON PUT would replace
+  // them with JSON. Re-uploading is the only way to change them.
+  if (row.kind === "file") {
+    return errorResponse(400, "uploaded files are binary; upload a new file to replace it");
   }
 
   // Autosave writes must name the version they loaded: without
@@ -380,6 +395,50 @@ export async function createFile(
     createdAt: ts,
     updatedAt: ts,
   };
+}
+
+/** Create a generic uploaded file (`kind: "file"`): stream the body to the
+ *  standard blob key with the upload's Content-Type, then insert the row.
+ *  The body is never parsed, so `MAX_UPLOAD_BYTES` — not the 4 MiB JSON
+ *  cap — is the limit. On an insert failure the R2 object is removed again
+ *  so a failed upload leaves nothing behind. */
+export async function createUploadedFile(
+  env: Env,
+  owner: string,
+  folderId: string | null,
+  name: string,
+  upload: { body: ReadableStream | ArrayBuffer | null; size: number; mime: string },
+): Promise<FileMeta> {
+  const id = newId();
+  const ts = now();
+  const safe = (name || "Untitled").trim().slice(0, 200) || "Untitled";
+  await env.R2.put(r2FileKey(id), upload.body ?? new Uint8Array(0), {
+    httpMetadata: { contentType: upload.mime },
+  });
+  const row: FileRow = {
+    id,
+    owner,
+    folder_id: folderId,
+    name: safe,
+    kind: "file",
+    version: 1,
+    size_bytes: upload.size,
+    mime: upload.mime,
+    has_thumb: false,
+    thumb_updated_at: 0,
+    created_at: ts,
+    updated_at: ts,
+    deleted_at: null,
+    trashed_via: null,
+    starred_at: null,
+  };
+  try {
+    await filesRepo.insert(env, row);
+  } catch (e) {
+    await env.R2.delete(r2FileKey(id)).catch(() => {});
+    throw e;
+  }
+  return rowToMeta(row);
 }
 
 /** Blobs bigger than this are not worth parsing on a rename: the mirror is

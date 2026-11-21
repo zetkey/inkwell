@@ -51,8 +51,9 @@ export interface MarkdownEditorProps {
   save: SaveFn;
   saveThumb: ThumbFn;
   onThumbSaved?: () => void;
-  onReload?: (loaded: LoadedFile) => void;
   reload?: () => Promise<LoadedFile>;
+  /** Fired when a save hits 409; the page opens its conflict banner. */
+  onConflict?: () => void;
   renderHeader?: RenderEditorHeader;
 }
 
@@ -65,8 +66,8 @@ export default function MarkdownEditor({
   save,
   saveThumb,
   onThumbSaved,
-  onReload,
   reload,
+  onConflict,
   renderHeader,
 }: MarkdownEditorProps) {
   const readOnly = loaded.permission !== "write";
@@ -102,7 +103,7 @@ export default function MarkdownEditor({
       const persisted = saved.blob as MarkdownNotesFileBlob;
       thumb.request(saved.fp, async () => markdownToThumbSvg(persisted.source));
     },
-    onReload,
+    onConflict,
   });
 
   const lifecycleRef = useRef(lifecycle);

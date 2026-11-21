@@ -10,23 +10,28 @@
 import { Hono } from "hono";
 import * as filesRepo from "../db/repos/files";
 import * as usersRepo from "../db/repos/users";
+import { newId } from "../lib/crypto";
 import { randomGuestName } from "../lib/guest-name";
 import { errorResponse } from "../lib/responses";
 import { requireSession } from "../middleware/auth";
 import type { AppEnv } from "../middleware/types";
 
 export interface CollabIdentity {
-  /** Stable peer id for the room: owner user id, or `share:<token>`. */
+  /** Peer id for the room: the owner's user id, or `guest:<random>` for a
+   *  share-token connection. */
   id: string;
   name: string;
 }
 
-// Guest identity is derived from the share token alone — never from
-// client input or cookies. The peer id stays token-derived and stable;
-// the display name is a random animal phrase so two guests on the same
-// token stay distinguishable by peerId + name.
-export function guestIdentity(token: string): CollabIdentity {
-  return { id: `share:${token}`, name: randomGuestName() };
+// Guest identity is minted per WebSocket connection — never from client
+// input or cookies. A token-derived id would make every visitor on one
+// share link the same peer (same colour, one presence entry), and would
+// leak the token through the room's presence frames as `peer.id`. The
+// random id also means the id itself carries no secret. The display name
+// is a random animal phrase, picked once per connection so it stays
+// stable for the socket's lifetime.
+export function guestIdentity(): CollabIdentity {
+  return { id: `guest:${newId()}`, name: randomGuestName() };
 }
 
 // Shared upgrade forwarder for the owner and share-token routes: one

@@ -3,6 +3,7 @@ import {
   classifyName,
   isJunkPath,
   MAX_RAW_FILE_BYTES,
+  MAX_SITE_TOTAL_BYTES,
   MAX_UPLOAD_BYTES,
   planEntries,
   sniffMatches,
@@ -88,6 +89,8 @@ describe("planEntries", () => {
   });
 
   it("keeps oversize convertible files as generic files, up to the raw limit", () => {
+    // Above the 25 MiB editor cap but still under the 100 MiB streamed
+    // upload cap: stored byte-for-byte as a generic file, no reason.
     const [job] = planEntries([entry("big.md", "x", MAX_UPLOAD_BYTES + 1)]);
     expect(job.kind).toBe("file");
     expect(job.name).toBe("big.md");
@@ -98,7 +101,7 @@ describe("planEntries", () => {
   });
 
   it("allows zips up to the site limit", () => {
-    const [job] = planEntries([entry("site.zip", "x", MAX_UPLOAD_BYTES + 1)]);
+    const [job] = planEntries([entry("site.zip", "x", MAX_SITE_TOTAL_BYTES)]);
     expect(job.reason).toBeUndefined();
     expect(job.kind).toBe("static-site");
     expect(job.site).toBe("zip");

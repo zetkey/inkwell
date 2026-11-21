@@ -441,6 +441,69 @@ export class AssetWriteError extends Error {
   }
 }
 
+/** Captured bytes of one asset that a pending write is about to replace. */
+export interface AssetSnapshot {
+  path: string;
+  bytes: Uint8Array;
+  contentType: string;
+}
+
+/** Snapshot the current R2 bytes of every pending path that already exists
+ *  in `manifest`, so a failed upload can put the previous bytes back.
+ *
+ *  Why: R2 overwrites are not transactional. The claim rollback restores
+ *  the D1 `version`/`size_bytes`, but without this the asset objects the
+ *  failed upload managed to write would keep serving new bytes under the
+ *  old version — a reader that loaded version N would see content that is
+ *  not version N. Run this *after* winning the claim (no other writer can
+ *  have touched the objects since) and before `writePendingAssets`.
+ *
+ *  Best-effort per path: bytes that cannot be read are simply not
+ *  snapshotted (there is nothing to restore). */
+export async function snapshotAssets(
+  env: Env,
+  id: string,
+  manifest: StaticSiteFileBlob,
+  pending: readonly PendingAsset[],
+): Promise<AssetSnapshot[]> {
+  const existing = new Map(manifest.assets.map((a) => [a.path, a]));
+  const out: AssetSnapshot[] = [];
+  for (const p of pending) {
+    const entry = existing.get(p.path);
+    if (!entry) continue;
+    try {
+      const obj = await env.R2.get(r2StaticSiteAssetKey(id, p.path));
+      if (!obj) continue;
+      out.push({
+        path: p.path,
+        bytes: new Uint8Array(await obj.arrayBuffer()),
+        contentType: entry.contentType,
+      });
+    } catch {
+      // Nothing to restore for this path.
+    }
+  }
+  return out;
+}
+
+/** Put snapped bytes back after a failed write. Best-effort and never
+ *  throws: the caller reports the 500 either way, and a path that cannot
+ *  be restored is the same state a crash mid-upload would leave. */
+export async function restoreAssets(
+  env: Env,
+  id: string,
+  snapshots: readonly AssetSnapshot[],
+): Promise<void> {
+  if (snapshots.length === 0) return;
+  await Promise.allSettled(
+    snapshots.map((s) =>
+      env.R2.put(r2StaticSiteAssetKey(id, s.path), s.bytes, {
+        httpMetadata: { contentType: s.contentType },
+      }),
+    ),
+  );
+}
+
 /** Write assets in modest parallel batches. Returns the number written;
  *  throws `AssetWriteError` (carrying the count that did land) on the
  *  first batch that fails. */

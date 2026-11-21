@@ -102,7 +102,13 @@ export function useWorkingCopy(
         return { version: meta.version };
       }
       const nextLoaded = active.nextLoaded(prev, meta, blob);
-      setLoaded((cur) => (cur && cur.meta.id === target ? nextLoaded : cur));
+      // The live editor still holds the scene it is editing; replacing
+      // `blob` here would make the editors re-seed themselves and drop
+      // keystrokes typed during the PUT. Only meta/version advance.
+      setLoaded((cur) =>
+        cur && cur.meta.id === target ? { ...nextLoaded, blob: prev.blob } : cur,
+      );
+      // The cache, by contrast, should reflect the persisted content.
       qc.setQueryData(active.cacheKey(target), nextLoaded);
       active.onSaved?.();
       return { version: meta.version };

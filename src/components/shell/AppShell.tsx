@@ -25,6 +25,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useMemo, useRef } from "react";
 import { matchPath, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { Button } from "@/components/ui/button";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
 import { useMe } from "@/data/auth";
 import { registerAppCommands, setCommandNavigate } from "@/features/actions/itemCommands";
@@ -100,6 +101,23 @@ export function AppShell() {
   const mobileSidebarOpen = useShellState((s) => s.mobileSidebarOpen);
   const sidebarWidth = useShellState((s) => s.sidebarWidth);
 
+  // A failed session probe must be visible and retryable; rendering
+  // `null` here left the user staring at a blank page with no way out.
+  if (me.isError) {
+    return (
+      <div className="grid h-dvh place-items-center bg-background p-6 text-center">
+        <div className="flex max-w-sm flex-col items-center gap-3">
+          <h1 className="font-display text-lg text-foreground">Couldn’t load your account</h1>
+          <p className="text-sm text-muted-foreground">
+            The session check failed. Check your connection and try again.
+          </p>
+          <Button onClick={() => void me.refetch()} disabled={me.isFetching}>
+            {me.isFetching ? "Retrying…" : "Retry"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
   if (!me.data) return null; // App.tsx redirects anonymous users to /login.
   const user = me.data;
 

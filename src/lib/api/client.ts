@@ -48,7 +48,10 @@ export interface Invite {
  *  blob, and it cannot be edited or write-shared. */
 export type FileKind = "excalidraw" | "drawio" | "notes" | "static-site" | "file";
 
-/** Largest accepted generic upload (`files.uploadRaw`), in bytes. */
+/** Largest accepted generic upload (`files.uploadRaw`), in bytes.
+ *  Mirrors `MAX_UPLOAD_BYTES` in `worker/services/file-blob.ts`: generic
+ *  uploads are streamed to R2, so they are capped at 100 MiB. (The 4 MiB
+ *  `MAX_FILE_BYTES` limit applies only to JSON blob PUTs.) */
 export const MAX_FILE_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 export interface FileMeta {

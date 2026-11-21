@@ -18,6 +18,13 @@ import { assertNever } from "./util";
  *  CPU budget for the manifest read and R2 fan-out. */
 export const MAX_SITE_ZIP_BYTES = 3 * 1024 * 1024;
 
+/** Max assets a site may have and still be ZIP-downloadable. Every asset
+ *  is one R2 read inside the same request; the Free plan allows 50
+ *  subrequests per invocation, so the manifest read plus 40 assets leaves
+ *  headroom for the rest of the request. Reached through the per-asset
+ *  signed site URL, not this ZIP path. */
+export const MAX_SITE_ZIP_ASSETS = 40;
+
 export function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
     ...init,
@@ -79,23 +86,23 @@ export async function streamFileResponse(
   row: FileRow,
   opts: { download?: boolean; includeFolderId?: boolean } = {},
 ): Promise<Response> {
+  if (row.kind === "file") {
+    // Uploaded files are opaque bytes: this read answers with a small JSON
+    // descriptor (plus the canonical `x-file-*` headers) so viewers can
+    // discover the kind/mime/size, `/raw` streams the bytes inline and
+    // `/download` attaches them.
+    if (opts.download) return await streamRawFile(env, row, { download: true });
+    return jsonResponse(
+      { kind: "file", mime: safeMime(row.mime), sizeBytes: row.size_bytes },
+      { headers: fileMetaHeaders(row, opts.includeFolderId) },
+    );
+  }
   const obj = await env.R2.get(r2FileKey(row.id));
   if (!obj) return errorResponse(404, "file blob missing in R2");
   const headers: Record<string, string> = {
     "content-type": "application/json; charset=utf-8",
-    etag: `"${row.version}"`,
-    "x-file-id": row.id,
-    "x-file-name": encodeURIComponent(row.name),
-    "x-file-kind": row.kind,
-    "x-file-version": String(row.version),
-    "x-file-updated-at": String(row.updated_at),
-    "x-file-has-thumb": row.has_thumb ? "1" : "0",
-    "cache-control": "no-store",
+    ...fileMetaHeaders(row, opts.includeFolderId),
   };
-  if (opts.includeFolderId) {
-    headers["x-file-folder-id"] = row.folder_id ?? "";
-    headers["x-file-starred-at"] = row.starred_at === null ? "" : String(row.starred_at);
-  }
   if (opts.download) {
     if (row.kind === "notes") {
       const parsed = await parseStoredFileBlob(obj);
@@ -167,6 +174,12 @@ export async function streamFileResponse(
           `site is too large to ZIP (max ${MAX_SITE_ZIP_BYTES} bytes); open the site URL to download assets individually`,
         );
       }
+      if (manifest.assets.length > MAX_SITE_ZIP_ASSETS) {
+        return errorResponse(
+          413,
+          `site has too many files to ZIP (max ${MAX_SITE_ZIP_ASSETS}); open the site URL to download assets individually`,
+        );
+      }
       const entries: Record<string, Uint8Array> = {};
       for (const a of manifest.assets) {
         const assetObj = await env.R2.get(r2StaticSiteAssetKey(row.id, a.path));
@@ -181,6 +194,29 @@ export async function streamFileResponse(
     }
   }
   return new Response(obj.body, { headers });
+}
+
+/** Canonical `x-file-*` metadata headers shared by every file read.
+ *  `includeFolderId` is owner-only: share recipients must not learn the
+ *  owner's folder ids or star state. */
+function fileMetaHeaders(row: FileRow, includeFolderId?: boolean): Record<string, string> {
+  const headers: Record<string, string> = {
+    etag: `"${row.version}"`,
+    "x-file-id": row.id,
+    "x-file-name": encodeURIComponent(row.name),
+    "x-file-kind": row.kind,
+    "x-file-version": String(row.version),
+    "x-file-updated-at": String(row.updated_at),
+    "x-file-has-thumb": row.has_thumb ? "1" : "0",
+    "x-file-mime": safeMime(row.mime),
+    "x-file-size": String(row.size_bytes),
+    "cache-control": "no-store",
+  };
+  if (includeFolderId) {
+    headers["x-file-folder-id"] = row.folder_id ?? "";
+    headers["x-file-starred-at"] = row.starred_at === null ? "" : String(row.starred_at);
+  }
+  return headers;
 }
 
 /** `Content-Disposition` for a download. The ASCII `filename` stays as
@@ -226,35 +262,10 @@ function downloadExtensionForKind(kind: FileKind): "excalidraw" | "drawio" | "zi
   }
 }
 
-export async function serveR2WithCache(
-  env: { R2: R2Bucket },
-  ctx: { waitUntil(promise: Promise<unknown>): void } | null,
-  req: Request,
-  key: string,
-): Promise<Response> {
-  const cache = (globalThis as { caches?: { default: Cache } }).caches?.default;
-  if (cache) {
-    const cached = await cache.match(req);
-    if (cached) return cached;
-  }
-  const obj = await env.R2.get(key);
-  if (!obj) return errorResponse(404, "not found");
-  const contentType = obj.httpMetadata?.contentType ?? "application/octet-stream";
-  const res = new Response(obj.body, {
-    headers: {
-      "content-type": contentType,
-      etag: obj.httpEtag,
-      "cache-control": "public, max-age=31536000, immutable",
-    },
-  });
-  if (cache && ctx) ctx.waitUntil(cache.put(req, res.clone()));
-  return res;
-}
-
 export async function streamRawFile(
   env: { R2: R2Bucket },
   row: FileRow,
-  opts: { request: Request },
+  opts: { request?: Request; download?: boolean } = {},
 ): Promise<Response> {
   const obj = await env.R2.get(r2FileKey(row.id));
   if (!obj) return errorResponse(404, "file blob missing in R2");
@@ -268,8 +279,11 @@ export async function streamRawFile(
   if (isActiveMime(mime)) {
     headers["content-security-policy"] = "sandbox";
   }
-  const req = opts.request;
-  const range = req.headers.get("range");
+  if (opts.download) {
+    // `row.name` already carries the user's extension; no suffix is added.
+    headers["content-disposition"] = attachmentDisposition(row.name);
+  }
+  const range = opts.request?.headers.get("range");
   if (range) {
     // Minimal: ignore range, serve full.
   }

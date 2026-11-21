@@ -19,6 +19,7 @@ import { getDb, t } from "../db/client";
 import { inIds } from "../db/filters";
 import * as foldersRepo from "../db/repos/folders";
 import { MAX_DEPTH } from "../db/repos/folders";
+import { bodyDeclaredTooLarge, MAX_JSON_BYTES } from "../lib/http";
 import { checkFolderMove, dedupeByAncestor, type ItemRef, MAX_BULK_ITEMS } from "../lib/items";
 import { r2FileKey } from "../lib/keys";
 import { errorResponse, jsonResponse } from "../lib/responses";
@@ -41,12 +42,17 @@ const itemRef = z.object({
 const itemsBody = z.object({ items: z.array(itemRef).min(1) });
 const folderTarget = z.string().min(1).max(64).nullable();
 
-/** Parse + validate the body. The size cap is checked before the schema
- *  so an oversized batch is a clear 413 rather than a generic 400. */
+/** Parse + validate the body. The declared size is checked before
+ *  `req.json()` so an oversized batch never reaches the parser; the item
+ *  count is then capped before the schema runs so it is a clear 413
+ *  rather than a generic 400. */
 async function parseBody<S extends z.ZodType>(
   req: Request,
   schema: S,
 ): Promise<z.infer<S> | Response> {
+  if (bodyDeclaredTooLarge(req, MAX_JSON_BYTES)) {
+    return errorResponse(413, `request body exceeds ${MAX_JSON_BYTES} bytes`);
+  }
   let raw: unknown;
   try {
     raw = await req.json();

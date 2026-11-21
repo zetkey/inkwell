@@ -93,6 +93,7 @@ const MAX_INVITE_NOTE = 200;
 r.post("/invites", async (c) => {
   const session = c.get("session");
   const body = await parseJsonOrEmpty<CreateInviteBody>(c);
+  if (body instanceof Response) return body;
 
   let expiresAt: number | null = null;
   if (body.expiresInHours !== null && body.expiresInHours !== undefined) {

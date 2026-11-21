@@ -41,6 +41,9 @@ export interface UploadPanelProps {
   onUploadZip: (zip: Blob) => void;
   /** First-run only: create a starter index.html. */
   onUseTemplate?: () => void;
+  /** Another mutation (save / delete / entry) is in flight: block uploads
+   *  too so two requests never share one `If-Match` version. */
+  disabled?: boolean;
   className?: string;
 }
 
@@ -50,6 +53,7 @@ export function UploadPanel({
   onUploadFiles,
   onUploadZip,
   onUseTemplate,
+  disabled = false,
   className,
 }: UploadPanelProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -57,7 +61,7 @@ export function UploadPanel({
   const zipInputRef = useRef<HTMLInputElement | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [confirmZip, setConfirmZip] = useState<File | null>(null);
-  const busy = pending !== null;
+  const busy = pending !== null || disabled;
 
   const requestZip = useCallback(
     (zip: File) => {
@@ -146,7 +150,7 @@ export function UploadPanel({
             )}
           >
             {busy
-              ? pending.label
+              ? (pending?.label ?? "Saving…")
               : dragOver
                 ? "Drop to upload"
                 : isEmpty

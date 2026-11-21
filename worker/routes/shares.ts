@@ -43,6 +43,7 @@ sharesRoot.patch("/:token", async (c) => {
   const owner = c.get("session").userId;
   const token = c.req.param("token");
   const body = await parseJsonOrEmpty<UpdateShareBody>(c);
+  if (body instanceof Response) return body;
 
   const row = await sharesRepo.findByTokenForOwner(c.env, owner, token);
   if (!row) return errorResponse(404, "share not found");
@@ -171,6 +172,7 @@ fileSharesNested.post("/", async (c) => {
   const row = await filesRepo.findById(c.env, owner, fileId);
   if (!row) return errorResponse(404, "file not found");
   const body = await parseJsonOrEmpty<CreateShareBody>(c);
+  if (body instanceof Response) return body;
   // Static-site shares are view-only — see PATCH handler above.
   if ((row.kind === "static-site" || row.kind === "file") && body.permission === "write") {
     return errorResponse(400, "static-site and uploaded-file shares cannot grant write access");
@@ -225,6 +227,7 @@ folderSharesNested.post("/", async (c) => {
     return errorResponse(404, "folder not found");
   }
   const body = await parseJsonOrEmpty<CreateShareBody>(c);
+  if (body instanceof Response) return body;
   const created = await createShareRow(c.env, owner, "folder", folderId, body);
   return jsonResponse(rowToSharePublic(created));
 });

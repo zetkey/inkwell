@@ -20,15 +20,24 @@ import * as tagsRepo from "../db/repos/tags";
 import { ownerRenderPayload, signRender } from "../lib/crypto";
 import { bodyDeclaredTooLarge } from "../lib/http";
 import { r2ThumbKey } from "../lib/keys";
-import { errorResponse, jsonResponse, serveThumb, streamFileResponse } from "../lib/responses";
+import {
+  errorResponse,
+  jsonResponse,
+  safeMime,
+  serveThumb,
+  streamFileResponse,
+  streamRawFile,
+} from "../lib/responses";
 import { now } from "../lib/util";
 import { requireSession } from "../middleware/auth";
 import { parseJson, parseJsonOrEmpty } from "../middleware/body";
 import type { AppEnv } from "../middleware/types";
 import {
   createFile,
+  createUploadedFile,
   MAX_FILE_BYTES,
   MAX_THUMB_BYTES,
+  MAX_UPLOAD_BYTES,
   mirrorRenameIntoExcalidrawBlob,
   normalizeImportedExcalidraw,
   putFileBlob,
@@ -49,7 +58,9 @@ import {
   type PendingAsset,
   readManifest,
   releaseManifestClaim,
+  restoreAssets,
   StaticSiteError,
+  snapshotAssets,
   unzipSite,
   validateAssetPath,
   writeManifest,
@@ -172,6 +183,7 @@ interface CreateFileBody {
 r.post("/", async (c) => {
   const owner = c.get("session").userId;
   const body = await parseJsonOrEmpty<CreateFileBody>(c);
+  if (body instanceof Response) return body;
   const folderId: string | null = body.folderId ?? null;
   if (folderId !== null) {
     if (!(await foldersRepo.existsForOwner(c.env, owner, folderId))) {
@@ -179,14 +191,16 @@ r.post("/", async (c) => {
     }
   }
 
-  const meta = await createFile(
-    c.env,
-    owner,
-    folderId,
-    body.name || "Untitled",
-    normalizeFileKind(body.kind),
-    { tags: Array.isArray(body.tags) ? body.tags : undefined },
-  );
+  const kind = normalizeFileKind(body.kind);
+  // Generic files are opaque bytes: they are created only by POST
+  // /api/files/upload, which streams the body. There is no JSON seed.
+  if (kind === "file") {
+    return errorResponse(400, "uploaded files are created via POST /api/files/upload");
+  }
+
+  const meta = await createFile(c.env, owner, folderId, body.name || "Untitled", kind, {
+    tags: Array.isArray(body.tags) ? body.tags : undefined,
+  });
   return jsonResponse(meta);
 });
 
@@ -235,12 +249,73 @@ r.post("/import", async (c) => {
   return jsonResponse(meta);
 });
 
+// ─── Upload (generic file → kind "file") ─────────────────────────────
+//
+// POST /api/files/upload?name=<name>&folderId=<id>
+//
+// Body: the raw bytes (NOT multipart). The stored Content-Type comes from
+// `?mime=` or the request's `Content-Type`. `Content-Length` is required
+// — the body is streamed to R2 without buffering — and must not exceed
+// `MAX_UPLOAD_BYTES`: 411 without it, 413 over the cap.
+r.post("/upload", async (c) => {
+  const owner = c.get("session").userId;
+  const params = new URL(c.req.url).searchParams;
+
+  const folderId = params.get("folderId") || null;
+  if (folderId !== null && !(await foldersRepo.existsForOwner(c.env, owner, folderId))) {
+    return errorResponse(404, "folder not found");
+  }
+  const name = (params.get("name") || "").trim().slice(0, 200);
+  if (!name) return errorResponse(400, "name required");
+
+  const lengthHeader = c.req.header("content-length");
+  const size = lengthHeader === undefined ? Number.NaN : Number(lengthHeader);
+  if (!Number.isInteger(size) || size < 0) return errorResponse(411, "Content-Length required");
+  if (size > MAX_UPLOAD_BYTES) {
+    return errorResponse(413, `file too large (max ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB)`);
+  }
+
+  const mime = safeMime(params.get("mime") || c.req.header("content-type"));
+  const meta = await createUploadedFile(c.env, owner, folderId, name, {
+    body: size === 0 ? null : c.req.raw.body,
+    size,
+    mime,
+  });
+  return jsonResponse(meta);
+});
+
 // ─── Read ────────────────────────────────────────────────────────────
+// Metadata only — works for every kind, including uploaded files whose
+// blob has no JSON form.
+r.get("/:id/meta", async (c) => {
+  const owner = c.get("session").userId;
+  const id = c.req.param("id");
+  const row = await filesRepo.findById(c.env, owner, id);
+  if (!row) return errorResponse(404, "file not found");
+  const tags = await tagsRepo.listForEntity(c.env, "file", id);
+  const shareMap = await sharesRepo.countActiveByTarget(c.env, owner, "file", [id]);
+  return jsonResponse(rowToMeta(row, tags, { activeShareCount: shareMap.get(id) ?? 0 }));
+});
+
+// Raw bytes of an uploaded file, inline, with the stored Content-Type.
+// HTML/SVG/XML are served with `Content-Security-Policy: sandbox`.
+r.get("/:id/raw", async (c) => {
+  const owner = c.get("session").userId;
+  const id = c.req.param("id");
+  const row = await filesRepo.findById(c.env, owner, id);
+  if (!row) return errorResponse(404, "file not found");
+  if (row.kind !== "file") return errorResponse(400, "not an uploaded file");
+  return await streamRawFile(c.env, row, { request: c.req.raw });
+});
+
 r.get("/:id", async (c) => {
   const owner = c.get("session").userId;
   const id = c.req.param("id");
   const row = await filesRepo.findById(c.env, owner, id);
   if (!row) return errorResponse(404, "file not found");
+  if (row.kind === "file") {
+    return errorResponse(415, "uploaded file has no JSON blob; use /raw, /download or /meta");
+  }
   return await streamFileResponse(c.env, row, { includeFolderId: true });
 });
 
@@ -566,10 +641,15 @@ r.post("/:id/assets", async (c) => {
   // Same order as the ZIP route: claim first so a lost race leaves R2 alone.
   const claim = await claimManifestVersion(c.env, row, nextManifest);
   if (!claim) return errorResponse(409, "version mismatch");
+  // We hold the claim, so the stored bytes still match `manifest`. Capture
+  // the ones this upload will overwrite: a partial failure must restore
+  // them, or the old version would serve new bytes.
+  const snapshot = await snapshotAssets(c.env, id, manifest, pending);
   try {
     await writePendingAssets(c.env, id, pending);
     await writeManifest(c.env, id, nextManifest);
   } catch (e) {
+    await restoreAssets(c.env, id, snapshot);
     await releaseManifestClaim(c.env, row, claim);
     const wroteSome = e instanceof AssetWriteError && e.written > 0;
     return errorResponse(
@@ -658,12 +738,18 @@ r.post("/:id/assets/zip", async (c) => {
   const claim = await claimManifestVersion(c.env, row, nextManifest);
   if (!claim) return errorResponse(409, "version mismatch");
 
+  // Same restore contract as the multipart route: paths the new bundle
+  // overwrites are snapshotted once the claim is held, and put back if a
+  // later write fails, so `version` and the served bytes stay in step.
+  const snapshot = await snapshotAssets(c.env, id, manifest, pending);
+
   try {
     // Overwrite in place, then publish the manifest. Existing paths are
     // simply replaced; leftovers are removed after the manifest landed.
     await writePendingAssets(c.env, id, pending);
     await writeManifest(c.env, id, nextManifest);
   } catch (e) {
+    await restoreAssets(c.env, id, snapshot);
     await releaseManifestClaim(c.env, row, claim);
     const wroteSome = e instanceof AssetWriteError && e.written > 0;
     return errorResponse(

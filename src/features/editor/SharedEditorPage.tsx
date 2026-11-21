@@ -216,8 +216,14 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
           ? {
               onReload: () => {
                 bridge.discard();
-                setConflict(false);
-                bumpEditorKey();
+                void reload()
+                  .then((ls) => {
+                    setConflict(false);
+                    remountAfterConflict(ls);
+                  })
+                  .catch(() => {
+                    // Keep the banner; the fetch failed (offline/5xx).
+                  });
               },
               onDismiss: () => setConflict(false),
             }
@@ -233,7 +239,7 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
     // owner's saves should advance the canonical thumb.
     saveThumb: null,
     reload,
-    onReload: (ls: LoadedFile) => setLoaded(ls),
+    onConflict: () => setConflict(true),
     renderHeader,
   };
 
@@ -263,7 +269,6 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
         <ExcalidrawEditor
           key={editorKey}
           {...common}
-          onReload={remountAfterConflict}
           collabEnabled={shouldOpenCollab(loaded.permission)}
           collabPath={collabPath}
           chrome={

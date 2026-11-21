@@ -61,8 +61,9 @@ interface DrawioEditorProps {
   /** Called after a successful thumb upload so the dashboard can
    *  invalidate caches and pick up the new bust token. */
   onThumbSaved?: () => void;
-  onReload?: (loaded: LoadedFile) => void;
   reload?: () => Promise<LoadedFile>;
+  /** Fired when a save hits 409; the page opens its conflict banner. */
+  onConflict?: () => void;
   /** Renders the page header above the iframe (see `EditorHeader`). */
   renderHeader?: RenderEditorHeader;
 }
@@ -286,8 +287,8 @@ export default function DrawioEditor({
   save,
   saveThumb,
   onThumbSaved,
-  onReload,
   reload,
+  onConflict,
   renderHeader,
 }: DrawioEditorProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -305,6 +306,10 @@ export default function DrawioEditor({
   // editing while the export was in flight) are filtered against this.
   const pendingThumbXmlRef = useRef<string | null>(null);
   const previousFileIdRef = useRef(loaded.meta.id);
+  // Version, read by the reset effect without listing it as a dependency
+  // (our own saves bump it; re-running there would re-baseline the XML).
+  const loadedVersionRef = useRef(loaded.meta.version);
+  loadedVersionRef.current = loaded.meta.version;
 
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -424,22 +429,7 @@ export default function DrawioEditor({
       // `thumbFpRef` so a no-content-change save short-circuits.
       requestThumbExport();
     },
-    onReload: (fresh) => {
-      // Drawio's iframe holds the canonical canvas state; pushing the
-      // fresh XML in restores parity. The lifecycle has already
-      // updated its internal versionRef.
-      const freshXml = getDrawioXml(fresh);
-      latestXmlRef.current = freshXml;
-      post({
-        action: "load",
-        xml: freshXml,
-        autosave: readOnly ? 0 : 1,
-        title: fresh.meta.name,
-        noSaveBtn: 1,
-        noExitBtn: 1,
-      });
-      onReload?.(fresh);
-    },
+    onConflict,
   });
 
   useEffect(() => {
@@ -452,16 +442,15 @@ export default function DrawioEditor({
       thumbFpRef.current = null;
       pendingThumbXmlRef.current = null;
       // Reset readiness only for a different file. Parent save
-      // callbacks update `loaded.meta.version` after every successful
-      // PUT; resetting readiness on those version bumps would leave
-      // the iframe loaded while our status falls back to "Loading…".
+      // callbacks keep the same blob reference and only bump
+      // `meta.version`, so this effect does not re-run on our own saves.
       setReady(false);
       setFailed(false);
     }
-    lifecycle.reset(loaded.meta.version, hashXml(initialXml));
+    lifecycle.reset(loadedVersionRef.current, hashXml(initialXml));
     // `lifecycle.reset` is stable across renders (useCallback'd
     // against stable refs), so depending on it is harmless.
-  }, [initialXml, loaded.meta.id, loaded.meta.version, lifecycle.reset]);
+  }, [initialXml, loaded.meta.id, lifecycle.reset]);
 
   useEffect(() => {
     function onMessage(event: MessageEvent) {
@@ -743,6 +732,17 @@ export default function DrawioEditor({
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">
       {renderHeader?.(bridge)}
       <div className="relative min-h-0 w-full flex-1">
+        {/*
+         * RISK: this iframe is same-origin (public/drawio) and our
+         * integration needs DOM access (`contentDocument` styling + the
+         * keydown forwarder), so `allow-same-origin` is required — which
+         * means the sandbox does NOT isolate the vendor bundle from the
+         * app origin (same-origin + scripts can reach the parent). It is
+         * still declared with the exact capability list drawio needs, so
+         * removing our DOM integration later is a one-line change here.
+         * Origin checks in `onMessage` stay on the real origin (not
+         * `null`) because `allow-same-origin` is present.
+         */}
         <iframe
           // Remount when the resolved theme OR style changes so drawio
           // re-reads `?dark=` / `?ui=`. Cheap because it's only on
@@ -753,6 +753,7 @@ export default function DrawioEditor({
           title="draw.io editor"
           className="h-full w-full border-0 bg-background"
           allow="clipboard-read; clipboard-write"
+          sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads"
           onLoad={(e) => {
             const doc = e.currentTarget.contentDocument;
             if (doc?.head) ensureStylesheet(doc);

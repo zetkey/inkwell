@@ -261,26 +261,61 @@ export default function StaticSiteEditor({
     [id, onManifestChanged, qc],
   );
 
+  // A 409 means someone else bumped the bundle version. Pull the latest
+  // manifest+version instead of asking the user to reload the page; their
+  // uncommitted code edits stay in `edits` and can be saved again against
+  // the new version.
+  const refreshAfterConflict = useCallback(async () => {
+    try {
+      const [fresh, meta] = await Promise.all([files.load(id), files.meta(id)]);
+      const blob = coerceManifest(fresh.blob);
+      setVersion(meta.version);
+      setTexts({});
+      setLoadErrors({});
+      setEpoch((n) => n + 1);
+      setSaveError(null);
+      qc.setQueryData<LoadedFile>(keys.files.detail(id), fresh);
+      qc.setQueryData(keys.files.manifest(id), blob);
+      onManifestChanged?.(blob, meta);
+    } catch {
+      setSaveError(
+        "Conflict: this site was changed elsewhere, and refreshing failed. Reload the page.",
+      );
+    }
+  }, [id, onManifestChanged, qc]);
+
+  const onMutationError = useCallback(
+    (e: unknown, fallback: string) => {
+      if (e instanceof ApiError && e.status === 409) {
+        void refreshAfterConflict();
+        toast.error("Conflict: this site was changed elsewhere. Latest version loaded.");
+        return;
+      }
+      toast.error(errorMessage(e, fallback));
+    },
+    [refreshAfterConflict],
+  );
+
   const uploadFilesMutation = useMutation({
     mutationFn: (entries: Array<File | { path: string; file: File }>) =>
       staticSites.uploadAssets(id, entries, version),
     onSuccess: (r) => onMutated(r),
-    onError: (e) => toast.error(errorMessage(e, "upload failed")),
+    onError: (e) => onMutationError(e, "upload failed"),
   });
   const uploadZipMutation = useMutation({
     mutationFn: (zip: Blob) => staticSites.uploadZip(id, zip, version),
     onSuccess: (r) => onMutated(r),
-    onError: (e) => toast.error(errorMessage(e, "upload failed")),
+    onError: (e) => onMutationError(e, "upload failed"),
   });
   const deleteAssetMutation = useMutation({
     mutationFn: (path: string) => staticSites.deleteAsset(id, path, version),
     onSuccess: (r) => onMutated(r),
-    onError: (e) => toast.error(errorMessage(e, "delete failed")),
+    onError: (e) => onMutationError(e, "delete failed"),
   });
   const setEntryMutation = useMutation({
     mutationFn: (path: string) => staticSites.setEntry(id, path, version),
     onSuccess: (r) => onMutated(r),
-    onError: (e) => toast.error(errorMessage(e, "set entry failed")),
+    onError: (e) => onMutationError(e, "set entry failed"),
   });
 
   const uploadFiles = useCallback(
@@ -339,7 +374,12 @@ export default function StaticSiteEditor({
           }…`,
         }
       : null;
-  const mutating = setEntryMutation.isPending || deleteAssetMutation.isPending;
+  const mutating =
+    saving ||
+    uploadFilesMutation.isPending ||
+    uploadZipMutation.isPending ||
+    setEntryMutation.isPending ||
+    deleteAssetMutation.isPending;
 
   // ── Save every edited file (Ctrl/⌘+S) ────────────────────────────
   const versionRef = useRef(version);
@@ -371,17 +411,24 @@ export default function StaticSiteEditor({
       onMutated(result, true);
       return true;
     } catch (e) {
-      const msg =
-        e instanceof ApiError && e.status === 409
-          ? "Conflict: this site was changed elsewhere. Reload the page to get the latest version."
-          : errorMessage(e, "save failed");
+      if (e instanceof ApiError && e.status === 409) {
+        // Pull the new version, keep the edits in memory, and let the
+        // user press Save again against it.
+        await refreshAfterConflict();
+        const msg =
+          "Conflict: this site was changed elsewhere. Latest version loaded — save again.";
+        setSaveError(msg);
+        toast.error(msg);
+        return false;
+      }
+      const msg = errorMessage(e, "save failed");
       setSaveError(msg);
       toast.error(msg);
       return false;
     } finally {
       setSaving(false);
     }
-  }, [id, onMutated, writable]);
+  }, [id, onMutated, refreshAfterConflict, writable]);
 
   const discardSource = useCallback(() => {
     setEdits({});
@@ -576,6 +623,7 @@ export default function StaticSiteEditor({
     setTreeOpen(false);
   };
   const deleteFile = (p: string) => {
+    if (mutating) return;
     deleteAssetMutation.mutate(p, {
       onSuccess: () => {
         if (selected === p) setSelected(manifest.entry);
@@ -689,6 +737,7 @@ export default function StaticSiteEditor({
                       <UploadPanel
                         isEmpty={isEmpty}
                         pending={pending}
+                        disabled={mutating}
                         onUploadFiles={uploadFiles}
                         onUploadZip={uploadZip}
                         onUseTemplate={useTemplate}

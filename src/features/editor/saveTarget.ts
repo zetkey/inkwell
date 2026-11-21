@@ -6,9 +6,9 @@
 // file" unavailable exactly when the unmount flush needs it, so the id is
 // remembered here where it can only ever move to a real value.
 //
-// `saveTarget` throws instead of returning a no-op version: SaveLoop then
-// reports an error and keeps the edits dirty instead of marking a save
-// that never happened as "saved".
+// `saveTarget` throws instead of returning a no-op version: the save
+// lifecycle then reports an error and keeps the edits dirty instead of
+// marking a save that never happened as "saved".
 
 export interface IdentifiedFile {
   meta: { id: string };

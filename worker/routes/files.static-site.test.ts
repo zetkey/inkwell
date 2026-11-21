@@ -68,10 +68,15 @@ interface FakeR2Options {
   failManifestPut?: boolean;
   /** Fail the Nth asset put (1-based), after earlier puts succeeded. */
   failAssetPutAt?: number;
+  /** Extra objects already in the bucket (e.g. old static-site assets). */
+  assets?: Record<string, string>;
 }
 
 function fakeEnv(events: string[], options: FakeR2Options = {}): Env {
-  const store = new Map<string, string>([[MANIFEST_KEY, JSON.stringify(OLD_MANIFEST)]]);
+  const store = new Map<string, string>([
+    [MANIFEST_KEY, JSON.stringify(OLD_MANIFEST)],
+    ...Object.entries(options.assets ?? {}),
+  ]);
   let assetPuts = 0;
   return {
     R2: {
@@ -92,7 +97,14 @@ function fakeEnv(events: string[], options: FakeR2Options = {}): Env {
           if (assetPuts === options.failAssetPutAt) throw new Error("R2 unavailable");
         }
         events.push(`put:${key}`);
-        store.set(key, typeof value === "string" ? value : "bytes");
+        store.set(
+          key,
+          typeof value === "string"
+            ? value
+            : value instanceof Uint8Array
+              ? new TextDecoder().decode(value)
+              : "bytes",
+        );
       },
       delete: async (keys: string | string[]) => {
         events.push(`delete:${Array.isArray(keys) ? keys.join(",") : keys}`);
@@ -258,6 +270,28 @@ describe("POST /api/files/:id/assets", () => {
       expect.objectContaining({ expectedVersion: 5 }),
     );
     expect(events).toEqual(["put:static-sites/f1/page.html"]);
+  });
+
+  it("restores overwritten asset bytes when the manifest write fails", async () => {
+    mocks.claimVersion.mockResolvedValue(5);
+    const events: string[] = [];
+    const c = fakeEnv(events, {
+      failManifestPut: true,
+      assets: { "static-sites/f1/index.html": "<h1>old</h1>" },
+    });
+
+    const res = await filesRoutes.request(
+      "http://localhost/f1/assets",
+      { method: "POST", body: assetForm("index.html", "<h1>new</h1>") },
+      c,
+    );
+
+    expect(res.status).toBe(500);
+    expect(mocks.releaseVersion).toHaveBeenCalled();
+    // The new bytes landed, then the snapshot put the old ones back, so
+    // the still-current manifest keeps serving version N's content.
+    expect(events).toEqual(["put:static-sites/f1/index.html", "put:static-sites/f1/index.html"]);
+    expect(await (await c.R2.get("static-sites/f1/index.html"))?.text()).toBe("<h1>old</h1>");
   });
 });
 

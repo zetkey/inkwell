@@ -4,17 +4,19 @@
 // historically reimplemented:
 //
 //   * `versionRef` (the optimistic-concurrency token sent as `If-Match`)
-//   * `inflightRef` / `savePromiseRef` / `saveQueuedRef` — concurrency
-//     model so a save in flight coalesces with newer changes rather
-//     than racing
+//   * `inflightRef` / `savePromiseRef` — concurrency model so a save in
+//     flight coalesces with newer changes rather than racing
 //   * `savedFpRef` — fingerprint of the last successfully persisted
 //     content, used to dedup no-op saves
 //   * The 2.5s/15s-max `useDebounced` wrapper around the loop, plus `saveNow`
 //     / `discardPendingLocalWork`
 //   * The `beforeunload` (with `e.returnValue = ""` while dirty) +
 //     `visibilitychange` flush listeners
-//   * Resetting state when the parent loads a different file (or the
-//     same file at a fresh version after a 409 reload)
+//   * Resetting state when the parent loads a different file, or the same
+//     file at a fresh version after an explicit conflict reload.
+//
+// A 409 never reloads on its own: it raises `onConflict` and leaves the
+// local edits dirty so the page's conflict banner can ask the user.
 //
 // The hook is transport- and snapshot-agnostic: the editor passes a
 // `getLatest()` closure that returns its current snapshot fingerprint
@@ -64,9 +66,11 @@ export interface UseSaveLifecycleOptions<TBlob, TLoaded> {
   /** Fired after each successful save with the snapshot that was
    *  written. Editors use this to schedule a thumbnail upload. */
   onSaved?: (saved: SaveSnapshot<TBlob>) => void;
-  /** Fired after a 409 → reload succeeded. The hook updates its own
-   *  internal version ref before invoking this. */
-  onReload?: (loaded: TLoaded, freshVersion: number) => void;
+  /** Fired when a save hits 409. The page opens its conflict banner and
+   *  re-fetches on demand; the hook keeps the local edits dirty and never
+   *  auto-reloads (a silent reload would throw the user's pending work
+   *  away). */
+  onConflict?: () => void;
   debounceMs?: number;
   maxWaitMs?: number;
 }
@@ -100,7 +104,7 @@ export function useSaveLifecycle<TBlob, TLoaded>(
     transport,
     getLatest,
     onSaved,
-    onReload,
+    onConflict,
     debounceMs = SAVE_DEBOUNCE_MS,
     maxWaitMs = SAVE_MAX_WAIT_MS,
   } = opts;
@@ -117,9 +121,6 @@ export function useSaveLifecycle<TBlob, TLoaded>(
   const savedFpRef = useRef(initialFingerprint);
   const inflightRef = useRef(false);
   const savePromiseRef = useRef<Promise<boolean> | null>(null);
-  // Tells the loop to take another lap after the in-flight save
-  // resolves (a newer snapshot was pushed during the save).
-  const saveQueuedRef = useRef(false);
 
   // Capture the latest closures via refs so the inner loop's
   // dependency list stays small and the saveLatest callback is stable.
@@ -129,8 +130,8 @@ export function useSaveLifecycle<TBlob, TLoaded>(
   getLatestRef.current = getLatest;
   const onSavedRef = useRef(onSaved);
   onSavedRef.current = onSaved;
-  const onReloadRef = useRef(onReload);
-  onReloadRef.current = onReload;
+  const onConflictRef = useRef(onConflict);
+  onConflictRef.current = onConflict;
   const readOnlyRef = useRef(readOnly);
   readOnlyRef.current = readOnly;
 
@@ -138,11 +139,10 @@ export function useSaveLifecycle<TBlob, TLoaded>(
   const saveLatest = useCallback(async (): Promise<boolean> => {
     if (readOnlyRef.current) return true;
 
-    // Coalesce: if a save is already in flight, mark that we want
-    // another lap and return the in-flight promise. The running loop
-    // will read `latest` again on its next iteration.
+    // Coalesce: if a save is already in flight, return its promise. The
+    // running loop reads `latest` again on its next iteration, so a newer
+    // snapshot pushed meanwhile still gets persisted.
     if (inflightRef.current) {
-      saveQueuedRef.current = true;
       return savePromiseRef.current ?? Promise.resolve(false);
     }
 
@@ -152,7 +152,6 @@ export function useSaveLifecycle<TBlob, TLoaded>(
         while (true) {
           const snapshot = getLatestRef.current();
           if (!snapshot || snapshot.fp === savedFpRef.current) {
-            saveQueuedRef.current = false;
             setStatus("saved");
             setErrorMsg(null);
             return true;
@@ -174,24 +173,21 @@ export function useSaveLifecycle<TBlob, TLoaded>(
               // Don't let an onSaved error cancel further save laps.
             }
           } catch (e) {
-            if (e instanceof ApiError && e.status === 409 && transportRef.current.reload) {
-              try {
-                const fresh = await transportRef.current.reload();
-                const freshVersion = (fresh as unknown as { meta: { version: number } }).meta
-                  .version;
-                versionRef.current = freshVersion;
-                onReloadRef.current?.(fresh, freshVersion);
-                setStatus("error");
-                setErrorMsg("Refreshed: another tab saved a newer version.");
-              } catch {
-                setStatus("error");
-                setErrorMsg("Conflict; reload failed.");
-              }
+            if (e instanceof ApiError && e.status === 409) {
+              // Never auto-reload here: the server copy would replace the
+              // canvas and throw the user's pending work away. Keep the
+              // edits dirty and let the page's conflict banner offer an
+              // explicit Reload (which fetches a fresh blob with a new
+              // reference and remounts the editor).
+              onConflictRef.current?.();
+              setStatus("error");
+              setErrorMsg(
+                "Conflict: another tab saved a newer version. Reload to get the latest, or discard your changes.",
+              );
             } else {
               setStatus("error");
               setErrorMsg(errorMessage(e, "save failed"));
             }
-            saveQueuedRef.current = false;
             return false;
           }
 
@@ -200,12 +196,10 @@ export function useSaveLifecycle<TBlob, TLoaded>(
           // newer snapshot too (a change came in mid-flight).
           const next = getLatestRef.current();
           if (!next || next.fp === savedFpRef.current) {
-            saveQueuedRef.current = false;
             setStatus("saved");
             setErrorMsg(null);
             return true;
           }
-          saveQueuedRef.current = false;
         }
       } finally {
         inflightRef.current = false;
@@ -238,10 +232,7 @@ export function useSaveLifecycle<TBlob, TLoaded>(
     // save every few seconds of canvas activity even when the user isn't
     // editing.
     if (snapshot.fp === savedFpRef.current) {
-      if (inflightRef.current) {
-        saveQueuedRef.current = true;
-      } else {
-        saveQueuedRef.current = false;
+      if (!inflightRef.current) {
         debouncedSave.cancel();
         setStatus("saved");
         setErrorMsg(null);
@@ -249,7 +240,6 @@ export function useSaveLifecycle<TBlob, TLoaded>(
       return;
     }
 
-    if (inflightRef.current) saveQueuedRef.current = true;
     setStatus((s) => (s === "saving" ? s : "dirty"));
     setErrorMsg(null);
     debouncedSave();
@@ -261,9 +251,11 @@ export function useSaveLifecycle<TBlob, TLoaded>(
     return saveLatest();
   }, [debouncedSave, saveLatest]);
 
+  // Cancels pending work only: an already in-flight PUT cannot be aborted
+  // and will still land on the server. Callers that need that guarantee
+  // must block the leave until `saveNow()` resolves.
   const discardPendingLocalWork = useCallback(() => {
     debouncedSave.cancel();
-    saveQueuedRef.current = false;
     if (!inflightRef.current) {
       setStatus("saved");
       setErrorMsg(null);
@@ -274,7 +266,6 @@ export function useSaveLifecycle<TBlob, TLoaded>(
     (newVersion: number, newFingerprint: string) => {
       versionRef.current = newVersion;
       savedFpRef.current = newFingerprint;
-      saveQueuedRef.current = false;
       savePromiseRef.current = null;
       debouncedSave.cancel();
       setStatus("saved");
@@ -285,16 +276,10 @@ export function useSaveLifecycle<TBlob, TLoaded>(
 
   // ─── Browser unload guard ──────────────────────────────────────────
   // Live-ref the dirty flag so the listener doesn't re-bind on every
-  // status tick.
-  // A conflict reload leaves `status === "error"` but the editor was
-  // re-seeded with the server copy: nothing is unsaved, so it must not
-  // trigger the unload guard. Other errors (offline, 5xx) are real
-  // unsaved work.
-  const isDirty =
-    !readOnly &&
-    (status === "dirty" ||
-      status === "saving" ||
-      (status === "error" && !isConflictMessage(errorMsg)));
+  // status tick. A conflict (`error`) is *dirty*: the hook no longer
+  // auto-reloads, so the local edits are still unsaved until the user
+  // takes the banner's Reload or Discard.
+  const isDirty = !readOnly && (status === "dirty" || status === "saving" || status === "error");
   const isDirtyRef = useRef(isDirty);
   useEffect(() => {
     isDirtyRef.current = isDirty;

@@ -49,9 +49,24 @@ describe("shouldSendSnapshot", () => {
     expect(shouldSendSnapshot("a", [], new Set())).toBe(false);
   });
 
-  it("lets only the oldest peer answer", () => {
-    expect(shouldSendSnapshot("b", [peer("a"), peer("b")], new Set(["a"]))).toBe(false);
-    expect(shouldSendSnapshot("a", [peer("a"), peer("b")], new Set(["a"]))).toBe(true);
+  it("lets only the lowest peer id answer, whatever the order", () => {
+    // Order is deliberately reversed: election must not depend on it.
+    expect(shouldSendSnapshot("b", [peer("b"), peer("a")], new Set(["a"]))).toBe(false);
+    expect(shouldSendSnapshot("a", [peer("b"), peer("a")], new Set(["a"]))).toBe(true);
+  });
+
+  it("picks exactly one sender in a three-peer room", () => {
+    const peers = [peer("c"), peer("b"), peer("a")];
+    const seen = new Set(["a", "b"]);
+    const senders = ["a", "b", "c"].filter((self) => shouldSendSnapshot(self, peers, seen));
+    expect(senders).toEqual(["a"]);
+  });
+
+  it("includes self in the election even when absent from peers", () => {
+    // A presence frame may not list the receiver; a lower self id still
+    // makes it the elected sender, a higher one stays quiet.
+    expect(shouldSendSnapshot("a", [peer("b")], new Set())).toBe(true);
+    expect(shouldSendSnapshot("c", [peer("b")], new Set())).toBe(false);
   });
 
   it("stays quiet when every peer is already known", () => {

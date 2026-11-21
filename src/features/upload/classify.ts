@@ -21,13 +21,15 @@ import { type FileKind, MAX_FILE_UPLOAD_BYTES } from "@/lib/api/client";
 import { stripExtension } from "./naming";
 import type { DroppedEntry, PlannedJob, SiteSource } from "./types";
 
-/** Mirrors `MAX_FILE_BYTES` / `MAX_SITE_ASSET_BYTES` in the worker. */
+/** Mirrors `MAX_SITE_ASSET_BYTES` in `worker/services/static-site.ts`:
+ *  the limit for one asset inside a static site. */
 export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 /** Mirrors the worker's generic-upload cap (`MAX_UPLOAD_BYTES` in
- *  `services/file-blob.ts`): the limit for files stored as kind `file`. */
+ *  `services/file-blob.ts`, streamed): the limit for files stored as
+ *  kind `file`. */
 export const MAX_RAW_FILE_BYTES = MAX_FILE_UPLOAD_BYTES;
 /** Mirrors `MAX_SITE_TOTAL_BYTES` (a .zip or a whole directory site). */
-export const MAX_SITE_TOTAL_BYTES = 100 * 1024 * 1024;
+export const MAX_SITE_TOTAL_BYTES = 25 * 1024 * 1024;
 /** Mirrors `MAX_SITE_ASSET_COUNT`. */
 export const MAX_SITE_FILES = 500;
 

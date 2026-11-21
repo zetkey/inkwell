@@ -1,229 +1,163 @@
-// Save-loop behaviour: the four ways edits used to get lost or write
-// over a newer version. The loop is framework-free (see `saveLoop.ts`),
-// so these run on fake timers with a fake transport and no DOM.
+// @vitest-environment jsdom
+//
+// The live save lifecycle: autosave after a change, conflicts that keep
+// the local edits dirty (no silent auto-reload), and the fact that
+// "discard" cannot cancel a PUT that is already in flight.
 
+import { act, createElement as h } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api/client";
-import { SaveLoop, type SaveSnapshot } from "./saveLoop";
+import { type UseSaveLifecycleResult, useSaveLifecycle } from "./useSaveLifecycle";
+
+interface NotesBlob {
+  kind: "notes";
+  source: string;
+}
 
 interface Loaded {
   meta: { version: number };
-  blob: string;
 }
 
-function harness(overrides?: Partial<{ readOnly: boolean }>) {
-  let latest: SaveSnapshot<string> = { fp: "a", blob: "A" };
-  const saves: Array<{ version: number; blob: string }> = [];
-  const statuses: string[] = [];
+let api: UseSaveLifecycleResult | null = null;
+let root: Root | null = null;
 
-  const transport = {
-    save: vi.fn(async (version: number, blob: string) => {
-      saves.push({ version, blob });
-      return { version: version + 1 };
-    }),
-    reload: vi.fn(async (): Promise<Loaded> => ({ meta: { version: 7 }, blob: "FRESH" })),
-  };
-
-  const loop = new SaveLoop<string, Loaded>({
-    initialVersion: 3,
-    initialFingerprint: "0",
-    live: {
-      readOnly: overrides?.readOnly ?? false,
-      transport,
-      getLatest: () => latest,
-      onReload: (fresh) => {
-        latest = { fp: "fresh", blob: fresh.blob };
-      },
-    },
-    onStatus: (status, error) => statuses.push(error ? `${status}:${error}` : status),
+function Probe({
+  save,
+  onConflict,
+}: {
+  save: (version: number, blob: NotesBlob) => Promise<{ version: number }>;
+  onConflict?: () => void;
+}) {
+  api = useSaveLifecycle<NotesBlob, Loaded>({
+    initialVersion: 1,
+    initialFingerprint: "base",
+    readOnly: false,
+    transport: { save },
+    getLatest: () => snapshot.current,
+    onConflict,
   });
-
-  return {
-    loop,
-    saves,
-    statuses,
-    transport,
-    setLatest: (fp: string, blob: string) => {
-      latest = { fp, blob };
-    },
-  };
+  return null;
 }
 
-/** Transport whose saves stay in flight until the test resolves them. */
-function deferredHarness() {
-  const saves: Array<{ version: number; blob: string }> = [];
-  const resolvers: Array<() => void> = [];
-  let latest: SaveSnapshot<string> = { fp: "a", blob: "A" };
-  const transport = {
-    save: vi.fn(
-      (version: number, blob: string) =>
-        new Promise<{ version: number }>((resolve) => {
-          saves.push({ version, blob });
-          resolvers.push(() => resolve({ version: version + 1 }));
-        }),
-    ),
-  };
-  const loop = new SaveLoop<string, Loaded>({
-    initialVersion: 3,
-    initialFingerprint: "0",
-    live: {
-      readOnly: false,
-      transport,
-      getLatest: () => latest,
-    },
-    onStatus: () => {},
+const snapshot: { current: { fp: string; blob: NotesBlob } } = {
+  current: { fp: "v1", blob: { kind: "notes", source: "a" } },
+};
+
+async function mount(opts: {
+  save: (version: number, blob: NotesBlob) => Promise<{ version: number }>;
+  onConflict?: () => void;
+}) {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  root = createRoot(host);
+  await act(async () => {
+    root?.render(h(Probe, opts));
   });
-  return {
-    loop,
-    saves,
-    resolvers,
-    setLatest: (fp: string, blob: string) => {
-      latest = { fp, blob };
-    },
-  };
+  if (!api) throw new Error("hook did not mount");
+  return api;
 }
 
-/** Let resolved promises / queued microtasks run under fake timers. */
-const settle = () => vi.advanceTimersByTimeAsync(0);
-
-describe("SaveLoop", () => {
+describe("useSaveLifecycle", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    snapshot.current = { fp: "v1", blob: { kind: "notes", source: "a" } };
   });
-  afterEach(() => {
-    vi.clearAllTimers();
+
+  afterEach(async () => {
+    await act(async () => {
+      root?.unmount();
+    });
+    root = null;
+    api = null;
+    document.body.innerHTML = "";
     vi.useRealTimers();
   });
 
-  it("saves a scheduled edit when the editor unmounts", async () => {
-    const h = harness();
+  it("autosaves after a change settles", async () => {
+    const save = vi.fn(async (_version: number, _blob: NotesBlob) => ({ version: 2 }));
+    const lifecycle = await mount({ save });
 
-    h.loop.notifyChange();
-    expect(h.saves).toHaveLength(0);
+    await act(async () => {
+      lifecycle.notifyChange();
+    });
+    expect(api?.status).toBe("dirty");
 
-    // Component unmount, before the 30s debounce fires.
-    h.loop.dispose();
-    await settle();
-    expect(h.saves).toEqual([{ version: 3, blob: "A" }]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_600);
+    });
 
-    // The unmount flush replaced the debounce; nothing fires later.
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(h.saves).toHaveLength(1);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledWith(1, snapshot.current.blob);
+    expect(api?.status).toBe("saved");
+    expect(api?.isDirty).toBe(false);
   });
 
-  it("takes another lap when an edit lands during an in-flight save", async () => {
-    const h = deferredHarness();
+  it("keeps local edits dirty on 409 and never reloads on its own", async () => {
+    const save = vi.fn(async (_version: number, _blob: NotesBlob) => {
+      throw new ApiError(409, "version conflict");
+    });
+    const onConflict = vi.fn();
+    const lifecycle = await mount({ save, onConflict });
 
-    h.loop.notifyChange();
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(h.saves).toEqual([{ version: 3, blob: "A" }]);
+    await act(async () => {
+      lifecycle.notifyChange();
+      await vi.advanceTimersByTimeAsync(2_600);
+    });
 
-    h.setLatest("b", "B");
-    h.loop.notifyChange();
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(onConflict).toHaveBeenCalledTimes(1);
+    expect(api?.status).toBe("error");
+    expect(api?.errorMessage).toMatch(/^Conflict/);
+    // The canvas keeps the unsaved work, so the unload/leave guard must
+    // still treat the editor as dirty.
+    expect(api?.isDirty).toBe(true);
 
-    h.resolvers[0]();
-    await settle();
-    expect(h.saves[1]).toEqual({ version: 4, blob: "B" });
-
-    h.resolvers[1]();
-    await settle();
-    expect(h.saves).toHaveLength(2);
-
-    h.loop.dispose();
-    await settle();
-    expect(h.saves).toHaveLength(2);
+    // No silent reload: the next attempt still uses the original
+    // If-Match version (a reload would have advanced it).
+    await act(async () => {
+      await lifecycle.saveNow();
+    });
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save.mock.calls[0][0]).toBe(1);
+    expect(save.mock.calls[1][0]).toBe(1);
+    expect(api?.isDirty).toBe(true);
   });
 
-  it("finishes the in-flight lap even when the editor unmounted", async () => {
-    const h = deferredHarness();
+  it("cannot cancel a save that is already in flight", async () => {
+    // No debounce involved: `saveNow` writes immediately, so real timers
+    // keep React's act scheduling simple.
+    vi.useRealTimers();
+    // `Promise.withResolvers` is ES2024; this project's lib is ES2022, so
+    // the executor form is the only option (documented exception).
+    let release!: (value: { version: number }) => void;
+    const gate = new Promise<{ version: number }>((resolve) => {
+      release = resolve;
+    });
+    const save = vi.fn((_version: number, _blob: NotesBlob) => gate);
+    const lifecycle = await mount({ save });
 
-    h.loop.notifyChange();
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(h.saves).toEqual([{ version: 3, blob: "A" }]);
+    let pending!: Promise<boolean>;
+    await act(async () => {
+      lifecycle.notifyChange();
+      pending = lifecycle.saveNow();
+    });
+    expect(save).toHaveBeenCalledTimes(1);
 
-    // The user typed while the PUT was in flight, then navigated away.
-    h.setLatest("b", "B");
-    h.loop.notifyChange();
-    h.loop.dispose();
+    // "Discard" only drops the debounce; the PUT is already on the wire.
+    await act(async () => {
+      lifecycle.discardPendingLocalWork();
+      release({ version: 2 });
+    });
+    expect(await pending).toBe(true);
 
-    h.resolvers[0]();
-    await settle();
-    expect(h.saves[1]).toEqual({ version: 4, blob: "B" });
-
-    h.resolvers[1]();
-    await settle();
-    expect(h.saves).toHaveLength(2);
-
-    // The loop is done; nothing more is PUT after the unmount.
-    h.setLatest("c", "C");
-    h.loop.notifyChange();
-    await vi.advanceTimersByTimeAsync(60_000);
-    await settle();
-    expect(h.saves).toHaveLength(2);
-  });
-
-  it("reloads on 409, raises the version baseline, and stops writing the stale scene", async () => {
-    const h = harness();
-    const conflict = new ApiError(409, "version conflict");
-    h.transport.save.mockRejectedValueOnce(conflict);
-
-    h.loop.notifyChange();
-    await vi.advanceTimersByTimeAsync(30_000);
-    await settle();
-
-    expect(h.transport.reload).toHaveBeenCalledTimes(1);
-    expect(h.saves).toHaveLength(0);
-    expect(h.statuses.at(-1)).toContain("another tab saved a newer version");
-
-    // Stale canvas: even another change must not be written back.
-    h.setLatest("c", "C");
-    h.loop.notifyChange();
-    await vi.advanceTimersByTimeAsync(30_000);
-    await settle();
-    expect(h.saves).toHaveLength(0);
-
-    // Host re-seeded from the reload: next save carries the fresh version.
-    h.loop.reset(7, "fresh");
-    h.setLatest("d", "D");
-    h.loop.notifyChange();
-    await vi.advanceTimersByTimeAsync(30_000);
-    await settle();
-    expect(h.saves).toEqual([{ version: 7, blob: "D" }]);
-  });
-
-  it("drops pending work on discard, including the unmount flush", async () => {
-    const h = harness();
-
-    h.loop.notifyChange();
-    h.loop.discard();
-    expect(h.statuses.at(-1)).toBe("saved");
-
-    await vi.advanceTimersByTimeAsync(60_000);
-    h.loop.dispose();
-    await settle();
-    expect(h.transport.save).not.toHaveBeenCalled();
-  });
-
-  it("saves again after a StrictMode cleanup re-arms the loop", async () => {
-    const h = harness();
-
-    // StrictMode (dev) runs cleanup -> setup on the same hook instance.
-    h.loop.dispose();
-    h.loop.attach();
-
-    h.setLatest("e", "E");
-    h.loop.notifyChange();
-    await vi.advanceTimersByTimeAsync(30_000);
-    await settle();
-    expect(h.saves).toEqual([{ version: 3, blob: "E" }]);
-  });
-
-  it("saves nothing in a read-only session", async () => {
-    const h = harness({ readOnly: true });
-
-    h.loop.notifyChange();
-    h.loop.dispose();
-    await settle();
-    expect(h.transport.save).not.toHaveBeenCalled();
+    // The write landed and advanced the version: the next save must send
+    // If-Match version 2, not 1.
+    snapshot.current = { fp: "v2", blob: { kind: "notes", source: "b" } };
+    await act(async () => {
+      await lifecycle.saveNow();
+    });
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save.mock.calls[1][0]).toBe(2);
   });
 });

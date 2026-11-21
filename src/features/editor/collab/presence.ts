@@ -23,11 +23,10 @@ export function peerCursorFromFrame(frame: RemoteCursorMessage): PeerCursor | un
  * Whether this client should answer a presence update with a full scene
  * snapshot.
  *
- * The server builds `peers` from `ctx.getWebSockets()`, i.e. socket
- * creation order, so index 0 is the room's oldest attachment. Only that
- * peer answers a fresh face: everyone else stays quiet, so N simultaneous
- * joiners cost one snapshot instead of N, and a client that reconnects
- * (new peerId) gets healed by the oldest remaining peer.
+ * Exactly one client answers: the one with the lexicographically lowest
+ * peer id in the room (self included). Peer ids are random per socket,
+ * so the election is independent of join order, survives reconnects, and
+ * keeps N simultaneous joiners at one snapshot instead of N.
  *
  * Snapshots exist because the delta baseline is the HTTP-loaded scene:
  * collaborators' unsaved edits (30s autosave debounce) and anything
@@ -39,6 +38,11 @@ export function shouldSendSnapshot(
   seen: ReadonlySet<string>,
 ): boolean {
   if (!selfPeerId || peers.length === 0) return false;
-  if (peers[0].peerId !== selfPeerId) return false;
-  return peers.some((peer) => !seen.has(peer.peerId));
+  // Nothing new to deliver: stay quiet.
+  if (!peers.some((peer) => !seen.has(peer.peerId))) return false;
+  let elected = selfPeerId;
+  for (const peer of peers) {
+    if (peer.peerId < elected) elected = peer.peerId;
+  }
+  return elected === selfPeerId;
 }

@@ -167,49 +167,55 @@ export function EditorPage() {
 
   const starred = starOverride?.id === id ? starOverride.starred : loaded?.meta.starredAt != null;
 
-  // Reload after a 409 conflict: bypass cache and force a fresh fetch.
-  // Only the save lifecycle's conflict path calls this.
+  // Explicit conflict reload (the header banner's Reload button): bypass
+  // the cache and force a fresh fetch. Never loads a staged server copy
+  // on its own — a silent reload would discard the user's pending edits.
   const reload = useCallback(async () => {
     const ls = await qc.fetchQuery({
       queryKey: keys.files.detail(id),
       queryFn: () => files.load(id),
       staleTime: 0,
     });
-    setLoaded(ls);
-    setConflict(true);
+    // The user may have navigated to another file while the fetch was in
+    // flight; never replace a different working copy with this one.
+    if (loadedRef.current?.meta.id === id) setLoaded(ls);
     return ls;
   }, [qc, id]);
 
   // Save: throws ApiError(409) on version conflict so the editor's
-  // autosave loop can react. On success update both local state and the
-  // cached file detail row so revisiting this editor doesn't resurrect
-  // an old version from React Query's staleTime/gcTime Infinity cache.
+  // autosave loop can react. On success update only meta/version in the
+  // live working copy — keeping the previous `blob` reference is what
+  // stops the editors from re-seeding themselves after our own save. The
+  // cached detail row gets the saved blob so a later cold load shows the
+  // persisted content.
   const save = useCallback(
     async (version: number, blob: FileBlob) => {
       const m = await files.save(id, version, blob);
       const prev = loadedRef.current;
+      // A late PUT for a file the user already left must not touch the
+      // working copy on screen; just refresh that file's cached detail.
+      if (!prev || prev.meta.id !== id) {
+        qc.invalidateQueries({ queryKey: keys.files.detail(id), exact: true });
+        return { version: m.version };
+      }
       const nextLoaded: LoadedFile = {
+        ...prev,
         meta: {
+          ...prev.meta,
           id,
           name: m.name,
           kind: m.kind,
           version: m.version,
           updatedAt: m.updatedAt,
-          folderId: prev?.meta.folderId ?? null,
           // Once we've saved at least once, the editor's thumb pipeline
           // will have shipped (or is about to ship) a thumb. Server
           // `loadRow` is the source of truth on next cold load.
-          hasThumb: prev?.meta.hasThumb ?? false,
-          starredAt: prev?.meta.starredAt ?? m.starredAt ?? null,
+          hasThumb: prev.meta.hasThumb,
+          starredAt: prev.meta.starredAt ?? m.starredAt ?? null,
         },
-        blob,
-        permission: "write",
-        allowDownload: true,
-        sharedBy: null,
-        shareExpiresAt: null,
       };
-      setLoaded(nextLoaded);
-      qc.setQueryData(keys.files.detail(id), nextLoaded);
+      setLoaded((cur) => (cur && cur.meta.id === id ? nextLoaded : cur));
+      qc.setQueryData<LoadedFile>(keys.files.detail(id), { ...nextLoaded, blob });
       // Update cached file-list rows so explorer views show fresh data.
       // Scope to list queries only — invalidating `keys.files.all` would
       // also match `keys.files.detail(id)` (prefix match) and trigger a
@@ -441,8 +447,14 @@ export function EditorPage() {
             ? {
                 onReload: () => {
                   bridge.discard();
-                  setConflict(false);
-                  setEditorKey((k) => k + 1);
+                  void reload()
+                    .then(() => {
+                      setConflict(false);
+                      setEditorKey((k) => k + 1);
+                    })
+                    .catch(() => {
+                      // Keep the banner; the fetch failed (offline/5xx).
+                    });
                 },
                 onDismiss: () => setConflict(false),
               }
@@ -458,7 +470,7 @@ export function EditorPage() {
     saveThumb,
     onThumbSaved,
     reload,
-    onReload: (ls: LoadedFile) => setLoaded(ls),
+    onConflict: () => setConflict(true),
     renderHeader,
   };
 
