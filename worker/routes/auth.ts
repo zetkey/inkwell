@@ -67,10 +67,10 @@ r.post("/login", async (c) => {
     return errorResponse(401, "invalid email or password");
   }
 
-  await Promise.all([
-    loginAttemptsRepo.clear(c.env, emailKey),
-    loginAttemptsRepo.clear(c.env, ipKey),
-  ]);
+  // Only the per-credential bucket resets on success: clearing the
+  // per-source counter would let an attacker with one valid account wipe
+  // their IP budget between spraying rounds.
+  await loginAttemptsRepo.clear(c.env, emailKey);
   const cookie = await createSessionCookie(c.env, result.user);
   return jsonResponse(
     {

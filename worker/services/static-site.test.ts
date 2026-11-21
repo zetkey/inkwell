@@ -1,7 +1,13 @@
 import { zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import { MAX_SITE_ZIP_BYTES } from "../lib/responses";
-import { MAX_SITE_TOTAL_BYTES, StaticSiteError, unzipSite, validateAssetPath } from "./static-site";
+import {
+  MAX_SITE_ASSET_COUNT,
+  MAX_SITE_TOTAL_BYTES,
+  StaticSiteError,
+  unzipSite,
+  validateAssetPath,
+} from "./static-site";
 
 describe("validateAssetPath", () => {
   it("accepts ordinary relative paths", () => {
@@ -58,6 +64,23 @@ describe("unzipSite", () => {
     expect(error).toBeInstanceOf(StaticSiteError);
     expect((error as StaticSiteError).status).toBe(413);
     expect((error as StaticSiteError).message).toContain("too many entries");
+  });
+
+  it("does not count directory entries against the asset cap", () => {
+    const entries: Record<string, Uint8Array> = {};
+    for (let i = 0; i < MAX_SITE_ASSET_COUNT; i++) entries[`f${i}.txt`] = new Uint8Array([97]);
+    for (let i = 0; i < 30; i++) entries[`dir${i}/`] = new Uint8Array();
+    const zip = zipSync(entries, { level: 0 });
+
+    const paths = Object.keys(unzipSite(zip)).filter((p) => !p.endsWith("/"));
+    expect(paths).toHaveLength(MAX_SITE_ASSET_COUNT);
+  });
+
+  it("still rejects 501 real files", () => {
+    const entries: Record<string, Uint8Array> = {};
+    for (let i = 0; i <= MAX_SITE_ASSET_COUNT; i++) entries[`f${i}.txt`] = new Uint8Array([97]);
+
+    expect(() => unzipSite(zipSync(entries, { level: 0 }))).toThrow(StaticSiteError);
   });
 
   it("rejects garbage as a bad ZIP", () => {

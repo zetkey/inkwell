@@ -211,13 +211,78 @@ describe("mirrorRenameIntoExcalidrawBlob", () => {
     );
   });
 
-  it("swallows a lost precondition (autosave wins, D1 stays canonical)", async () => {
+  it("retries once on a lost precondition, then succeeds", async () => {
     const blob = JSON.stringify({ elements: [], appState: {}, files: {} });
+    const etags = ['"etag-1"', '"etag-2"'];
+    const puts: unknown[] = [];
     const env = {
       R2: {
-        get: async () => ({ httpEtag: '"etag-1"', text: async () => blob }),
+        get: async () => ({
+          size: 64,
+          httpEtag: etags.shift() ?? '"etag-3"',
+          text: async () => blob,
+        }),
+        put: async (_key: string, _body: unknown, options: unknown) => {
+          puts.push(options);
+          if (puts.length === 1) throw new Error("precondition failed");
+        },
+      },
+    } as unknown as Env;
+
+    await expect(mirrorRenameIntoExcalidrawBlob(env, row(), "new name")).resolves.toBeUndefined();
+
+    expect(puts).toHaveLength(2);
+    expect(puts[0]).toEqual(expect.objectContaining({ onlyIf: { etagMatches: '"etag-1"' } }));
+    expect(puts[1]).toEqual(expect.objectContaining({ onlyIf: { etagMatches: '"etag-2"' } }));
+  });
+
+  it("gives up quietly when both attempts lose the precondition", async () => {
+    const blob = JSON.stringify({ elements: [], appState: {}, files: {} });
+    let puts = 0;
+    const env = {
+      R2: {
+        get: async () => ({ size: 64, httpEtag: '"e"', text: async () => blob }),
         put: async () => {
+          puts += 1;
           throw new Error("precondition failed");
+        },
+      },
+    } as unknown as Env;
+
+    await expect(mirrorRenameIntoExcalidrawBlob(env, row(), "new name")).resolves.toBeUndefined();
+    expect(puts).toBe(2);
+  });
+
+  it("never parses a blob over the mirror size cap", async () => {
+    let read = false;
+    let put = false;
+    const env = {
+      R2: {
+        get: async () => ({
+          size: 300 * 1024,
+          httpEtag: '"e"',
+          text: async () => {
+            read = true;
+            return "{}";
+          },
+        }),
+        put: async () => {
+          put = true;
+        },
+      },
+    } as unknown as Env;
+
+    await mirrorRenameIntoExcalidrawBlob(env, row(), "new name");
+
+    expect(read).toBe(false);
+    expect(put).toBe(false);
+  });
+
+  it("resolves when reading the blob throws", async () => {
+    const env = {
+      R2: {
+        get: async () => {
+          throw new Error("R2 down");
         },
       },
     } as unknown as Env;

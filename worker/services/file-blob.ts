@@ -369,6 +369,10 @@ export async function createFile(
   };
 }
 
+/** Blobs bigger than this are not worth parsing on a rename: the mirror is
+ *  cosmetic and the parse alone costs more CPU than the rename is worth. */
+const MAX_MIRROR_BYTES = 256 * 1024;
+
 // ─── Rename: mirror new name into excalidraw appState ───────────────
 //
 // On rename, mirror the new name into the blob's `appState.name` so the
@@ -385,30 +389,38 @@ export async function mirrorRenameIntoExcalidrawBlob(
   nextName: string,
 ): Promise<void> {
   if (row.kind !== "excalidraw") return;
-  const obj = await env.R2.get(r2FileKey(row.id));
-  if (!obj) return;
-  let parsed: FileBlob | null = null;
+  const key = r2FileKey(row.id);
+  // Best-effort by contract: this runs after the D1 rename has already
+  // committed, so a missing blob, a huge blob (parsing it would burn the
+  // request's CPU budget) or a lost precondition must never throw.
   try {
-    parsed = JSON.parse(await obj.text()) as FileBlob;
+    // The retry re-reads, so the second attempt writes on top of whatever
+    // autosave landed between our get and put instead of failing again.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const obj = await env.R2.get(key);
+      if (!obj || obj.size > MAX_MIRROR_BYTES) return;
+      let parsed: FileBlob;
+      try {
+        parsed = JSON.parse(await obj.text()) as FileBlob;
+      } catch {
+        return;
+      }
+      const body = JSON.stringify({
+        ...parsed,
+        appState: { ...((parsed as ExcalidrawFileBlob).appState ?? {}), name: nextName },
+      });
+      try {
+        await env.R2.put(key, body, {
+          httpMetadata: { contentType: "application/json" },
+          onlyIf: { etagMatches: obj.httpEtag },
+        });
+        return;
+      } catch {
+        // Precondition lost (an autosave rewrote the blob): retry once.
+      }
+    }
   } catch {
-    parsed = null;
-  }
-  if (!parsed) return;
-  const excalidraw = parsed as ExcalidrawFileBlob;
-  const nextBlob: FileBlob = {
-    ...excalidraw,
-    appState: { ...(excalidraw.appState ?? {}), name: nextName },
-  };
-  // Conditional write: an autosave may have replaced the blob between the
-  // `get` above and this `put`. Losing the precondition means the editor's
-  // content wins — D1 keeps the canonical name, and the next autosave
-  // mirrors it. Never surface that as an error.
-  try {
-    await env.R2.put(r2FileKey(row.id), JSON.stringify(nextBlob), {
-      httpMetadata: { contentType: "application/json" },
-      onlyIf: { etagMatches: obj.httpEtag },
-    });
-  } catch {
-    // Precondition failed (or R2 hiccup): best-effort, D1 stays canonical.
+    // R2 hiccup; D1 keeps the canonical name and the next autosave or
+    // rename mirrors it.
   }
 }

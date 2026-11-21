@@ -94,6 +94,9 @@ export function unzipSite(buf: Uint8Array): Record<string, Uint8Array> {
   try {
     return unzipSync(buf, {
       filter: (file) => {
+        // Directory entries (`dir/`) are not assets; many archive tools emit
+        // them and they must not count against the asset budget.
+        if (file.name.endsWith("/")) return true;
         entries += 1;
         if (entries > MAX_SITE_ASSET_COUNT) {
           throw new StaticSiteError(413, `too many entries (max ${MAX_SITE_ASSET_COUNT})`);
@@ -441,24 +444,40 @@ export function applyReplaceAll(
 // leaves orphan R2 objects (cleaned on next `deleteAllStaticSiteAssets`)
 // but never a manifest pointing at missing bytes.
 
+/** Thrown when some assets of an upload were written before one failed,
+ *  so callers can tell the user the site is partially updated. */
+export class AssetWriteError extends Error {
+  constructor(public written: number) {
+    super(`asset write failed after ${written} object(s)`);
+  }
+}
+
+/** Write assets in modest parallel batches. Returns the number written;
+ *  throws `AssetWriteError` (carrying the count that did land) on the
+ *  first batch that fails. */
 export async function writePendingAssets(
   env: Env,
   id: string,
   pending: PendingAsset[],
-): Promise<void> {
+): Promise<number> {
   // Run uploads in modest parallel batches to avoid spraying every
   // request at R2 at once for large uploads.
   const BATCH = 16;
+  let written = 0;
   for (let i = 0; i < pending.length; i += BATCH) {
     const slice = pending.slice(i, i + BATCH);
-    await Promise.all(
+    const results = await Promise.allSettled(
       slice.map((p) =>
         env.R2.put(r2StaticSiteAssetKey(id, p.path), p.bytes, {
           httpMetadata: { contentType: p.contentType },
         }),
       ),
     );
+    const failed = results.filter((r) => r.status === "rejected").length;
+    written += slice.length - failed;
+    if (failed > 0) throw new AssetWriteError(written);
   }
+  return written;
 }
 
 export async function deletePendingPaths(env: Env, id: string, paths: string[]): Promise<void> {

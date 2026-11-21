@@ -54,7 +54,7 @@ vi.mock("../db/repos/shares", () => ({
   findActive: async () => null,
 }));
 
-import { MAX_FILE_BYTES } from "../services/file-blob";
+import { MAX_FILE_BYTES, MAX_THUMB_BYTES } from "../services/file-blob";
 import filesRoutes from "./files";
 import publicShareRoutes from "./public-share";
 
@@ -128,6 +128,21 @@ describe("blob cap on every write path", () => {
     expect(res.status).toBe(413);
     expect(puts).toEqual([]);
     expect(mocks.claimVersion).not.toHaveBeenCalled();
+  });
+
+  it("thumbnail PUT rejects an oversized Content-Length before buffering", async () => {
+    const puts: string[] = [];
+    const res = await app.request(
+      "http://localhost/api/files/f1/thumb",
+      {
+        method: "PUT",
+        headers: { "content-length": String(MAX_THUMB_BYTES + 1) },
+      },
+      fakeEnv(puts),
+    );
+
+    expect(res.status).toBe(413);
+    expect(puts).toEqual([]);
   });
 
   it("folder-share PUT rejects a body over 4 MiB without writing", async () => {

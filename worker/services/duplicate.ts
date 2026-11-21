@@ -46,6 +46,14 @@ type SqliteBatchItem = BatchItem<"sqlite">;
 /** Most files a single duplicate request may copy (recursively). */
 const MAX_DUPLICATE_FILES = MAX_BULK_ITEMS;
 
+/** R2 work one copied file costs: blob get + blob put + thumb get/put. */
+const COPY_OPS_PER_FILE = 3;
+/** Bound on those operations per request. Beyond this a copy is already
+ *  long enough to hit per-invocation limits midway, leaving a half-copied
+ *  tree, so the request is refused up front. */
+const MAX_COPY_OPS = 800;
+const MAX_COPY_FILES = Math.floor(MAX_COPY_OPS / COPY_OPS_PER_FILE);
+
 // R2 fan-out per request. Keeps a big folder copy fast without
 // stampeding the bucket or the Worker's concurrent-subrequest limit.
 const R2_CONCURRENCY = 6;
@@ -78,6 +86,15 @@ export async function duplicateItems(
   sourceFiles: ReadonlyMap<string, FileRow>,
   targetFolderId: string | null | undefined,
 ): Promise<DuplicateResult> {
+  // Refuse an obviously oversized copy before touching D1 or R2: a
+  // half-finished duplicate is worse than a clear 413.
+  if (refs.filter((r) => r.type === "file").length > MAX_COPY_FILES) {
+    throw new DuplicateError(
+      413,
+      `duplicate in smaller batches: at most ${MAX_COPY_FILES} files per request`,
+    );
+  }
+
   const db = getDb(env);
   const ts = now();
 
@@ -123,6 +140,12 @@ export async function duplicateItems(
     throw new DuplicateError(
       413,
       `cannot duplicate more than ${MAX_DUPLICATE_FILES} files at once`,
+    );
+  }
+  if (directFiles.length + nestedFiles.length > MAX_COPY_FILES) {
+    throw new DuplicateError(
+      413,
+      `duplicate in smaller batches: at most ${MAX_COPY_FILES} files per request`,
     );
   }
 

@@ -33,6 +33,7 @@ import {
   putFileBlob,
 } from "../services/file-blob";
 import {
+  AssetWriteError,
   applyDelete,
   applyReplaceAll,
   applySetEntry,
@@ -369,6 +370,9 @@ r.put("/:id/thumb", async (c) => {
   const row = await filesRepo.findById(c.env, owner, id);
   if (!row) return errorResponse(404, "file not found");
 
+  if (Number(c.req.header("content-length") || "0") > MAX_THUMB_BYTES) {
+    return errorResponse(413, "thumbnail too large");
+  }
   const buf = await c.req.raw.arrayBuffer();
   if (buf.byteLength === 0) return errorResponse(400, "empty body");
   if (buf.byteLength > MAX_THUMB_BYTES) return errorResponse(413, "thumbnail too large");
@@ -518,6 +522,7 @@ r.post("/:id/assets", async (c) => {
   }
 
   const pending: PendingAsset[] = [];
+  let totalBytes = 0;
   // `c.req.parseBody({ all: true })` returns arrays for repeated keys.
   // Accept any field that resolves to a File-ish value.
   for (const value of Object.values(parsed)) {
@@ -529,6 +534,12 @@ r.post("/:id/assets", async (c) => {
       if (err) return errorResponse(400, `asset "${path}": ${err}`);
       if (item.size > MAX_SITE_ASSET_BYTES) {
         return errorResponse(413, `asset "${path}" exceeds ${MAX_SITE_ASSET_BYTES} bytes`);
+      }
+      // Content-Length may be absent (chunked); bound the accumulated
+      // decoded size before reading any more parts into memory.
+      totalBytes += item.size;
+      if (totalBytes > MAX_SITE_TOTAL_BYTES) {
+        return errorResponse(413, `upload exceeds ${MAX_SITE_TOTAL_BYTES} bytes`);
       }
       const bytes = new Uint8Array(await item.arrayBuffer());
       pending.push({
@@ -557,9 +568,15 @@ r.post("/:id/assets", async (c) => {
   try {
     await writePendingAssets(c.env, id, pending);
     await writeManifest(c.env, id, nextManifest);
-  } catch {
+  } catch (e) {
     await releaseManifestClaim(c.env, row, claim);
-    return errorResponse(500, "site update failed; the previous manifest is still in place");
+    const wroteSome = e instanceof AssetWriteError && e.written > 0;
+    return errorResponse(
+      500,
+      wroteSome
+        ? "site update failed after writing some assets; upload again"
+        : "site update failed; the previous manifest is still in place",
+    );
   }
   return siteResponse(c.env, owner, row, nextManifest, claim);
 });
@@ -587,6 +604,10 @@ r.post("/:id/assets/zip", async (c) => {
 
   const buf = await c.req.raw.arrayBuffer();
   if (buf.byteLength === 0) return errorResponse(400, "empty body");
+  // Content-Length may be absent (chunked); bound the buffered body too.
+  if (buf.byteLength > MAX_SITE_TOTAL_BYTES) {
+    return errorResponse(413, `upload exceeds ${MAX_SITE_TOTAL_BYTES} bytes`);
+  }
 
   let raw: Record<string, Uint8Array>;
   try {
@@ -642,9 +663,15 @@ r.post("/:id/assets/zip", async (c) => {
     // simply replaced; leftovers are removed after the manifest landed.
     await writePendingAssets(c.env, id, pending);
     await writeManifest(c.env, id, nextManifest);
-  } catch {
+  } catch (e) {
     await releaseManifestClaim(c.env, row, claim);
-    return errorResponse(500, "site update failed; the previous manifest is still in place");
+    const wroteSome = e instanceof AssetWriteError && e.written > 0;
+    return errorResponse(
+      500,
+      wroteSome
+        ? "site update failed after writing some assets; upload again"
+        : "site update failed; the previous manifest is still in place",
+    );
   }
 
   // Best-effort cleanup of assets the new manifest no longer references

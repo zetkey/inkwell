@@ -19,6 +19,11 @@
 //                     {t:"cursor",cursor,…,from,id,name,color}
 //                     {t:"error",message}            (sender only)
 
+/** Max characters in one client frame. 4 MiB is ~2000x a normal
+ *  collaborative delta and stays far below the 32 MiB transport limit,
+ *  which is a memory ceiling, not a CPU budget. */
+export const MAX_FRAME_CHARS = 4 * 1024 * 1024;
+
 export const PEER_COLORS = [
   "#e11d48", // rose
   "#d97706", // amber
@@ -150,6 +155,13 @@ export class CollabRoom implements DurableObject {
     const self = att.peer;
     if (typeof message !== "string") {
       sendError(ws, "binary frames are not supported");
+      return;
+    }
+    // Frames are incremental deltas (KBs); anything near the transport
+    // ceiling is abuse or a pasted image. Refuse before JSON.parse so a
+    // hostile frame cannot burn the room's CPU.
+    if (message.length > MAX_FRAME_CHARS) {
+      sendError(ws, "frame too large");
       return;
     }
 

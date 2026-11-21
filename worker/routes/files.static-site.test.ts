@@ -1,5 +1,6 @@
 import { zipSync } from "fflate";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MAX_SITE_TOTAL_BYTES } from "../services/static-site";
 import type { Env, FileRow } from "../types";
 
 const mocks = vi.hoisted(() => ({
@@ -64,10 +65,13 @@ function row(overrides: Partial<FileRow> = {}): FileRow {
 interface FakeR2Options {
   failPut?: boolean;
   failManifestPut?: boolean;
+  /** Fail the Nth asset put (1-based), after earlier puts succeeded. */
+  failAssetPutAt?: number;
 }
 
 function fakeEnv(events: string[], options: FakeR2Options = {}): Env {
   const store = new Map<string, string>([[MANIFEST_KEY, JSON.stringify(OLD_MANIFEST)]]);
+  let assetPuts = 0;
   return {
     R2: {
       get: async (key: string) => {
@@ -82,6 +86,10 @@ function fakeEnv(events: string[], options: FakeR2Options = {}): Env {
       put: async (key: string, value: unknown) => {
         if (options.failPut) throw new Error("R2 unavailable");
         if (options.failManifestPut && key === MANIFEST_KEY) throw new Error("R2 unavailable");
+        if (options.failAssetPutAt && key.startsWith("static-sites/")) {
+          assetPuts += 1;
+          if (assetPuts === options.failAssetPutAt) throw new Error("R2 unavailable");
+        }
         events.push(`put:${key}`);
         store.set(key, typeof value === "string" ? value : "bytes");
       },
@@ -249,6 +257,55 @@ describe("POST /api/files/:id/assets", () => {
       expect.objectContaining({ expectedVersion: 5 }),
     );
     expect(events).toEqual(["put:static-sites/f1/page.html"]);
+  });
+});
+
+describe("partial asset writes", () => {
+  it("reports that some assets landed and still rolls the version back", async () => {
+    mocks.claimVersion.mockResolvedValue(5);
+    const events: string[] = [];
+    const c = fakeEnv(events, { failAssetPutAt: 2 });
+    const form = new FormData();
+    form.append("a.html", new File(["<h1>a</h1>"], "a.html", { type: "text/html" }));
+    form.append("b.html", new File(["<h1>b</h1>"], "b.html", { type: "text/html" }));
+
+    const res = await filesRoutes.request(
+      "http://localhost/f1/assets",
+      { method: "POST", body: form },
+      c,
+    );
+
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({
+      error: "site update failed after writing some assets; upload again",
+    });
+    // First asset landed; the manifest was never written.
+    expect(events).toEqual(["put:static-sites/f1/a.html"]);
+    expect(mocks.releaseVersion).toHaveBeenCalledWith(
+      c,
+      "u1",
+      "f1",
+      expect.objectContaining({ expectedVersion: 5 }),
+    );
+  });
+});
+
+describe("ZIP post-buffer cap", () => {
+  it("rejects an oversized buffered body even without a truthful Content-Length", async () => {
+    mocks.claimVersion.mockResolvedValue(5);
+    const events: string[] = [];
+    const c = fakeEnv(events);
+    const body = new Uint8Array(MAX_SITE_TOTAL_BYTES + 1);
+
+    const res = await filesRoutes.request(
+      "http://localhost/f1/assets/zip",
+      { method: "POST", headers: { "content-length": "10" }, body },
+      c,
+    );
+
+    expect(res.status).toBe(413);
+    expect(events).toEqual([]);
+    expect(mocks.claimVersion).not.toHaveBeenCalled();
   });
 });
 
