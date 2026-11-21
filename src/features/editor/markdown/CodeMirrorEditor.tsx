@@ -5,6 +5,7 @@ import {
   completionKeymap,
 } from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { html } from "@codemirror/lang-html";
 import { markdown } from "@codemirror/lang-markdown";
 import { bracketMatching, HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
@@ -23,14 +24,22 @@ import { useEffect, useRef } from "react";
 
 interface CodeMirrorEditorProps {
   value: string;
-  /** Bumped when `value` becomes a new document (file switch / 409
-   *  reload). Ordinary `value` updates are echoes of the host's debounced
-   *  edits and must not rewind the doc. */
-  resetKey: number;
   onChange: (value: string) => void;
   readOnly: boolean;
   dark: boolean;
   fontFamily: string;
+  /** Syntax mode. Defaults to Markdown. */
+  language?: "markdown" | "html" | "text";
+  /** Accessible name of the text area. */
+  ariaLabel?: string;
+  /**
+   * `"writing"`: a gutter-less, auto-height surface meant to live inside a
+   * scrolling, centred column (Markdown source mode). `"code"` (default) keeps
+   * the classic full-height editor with line numbers used for HTML files.
+   */
+  variant?: "code" | "writing";
+  /** Receives the underlying view (for focus / scroll restoration). */
+  onView?: (view: EditorView | null) => void;
 }
 
 function markdownHighlightStyle(dark: boolean) {
@@ -87,14 +96,40 @@ function markdownHighlightStyle(dark: boolean) {
       tag: [tags.meta, tags.processingInstruction, tags.punctuation],
       color: palette.syntax,
     },
-    { tag: tags.list, color: palette.accent, fontWeight: "600" },
     { tag: tags.quote, color: palette.quote, fontStyle: "italic" },
     { tag: tags.contentSeparator, color: palette.separator },
     { tag: [tags.keyword, tags.typeName, tags.className], color: palette.keyword },
     { tag: [tags.number, tags.bool, tags.null], color: palette.number },
     { tag: [tags.string, tags.regexp], color: palette.code },
     { tag: tags.comment, color: palette.syntax, fontStyle: "italic" },
+    // HTML / CSS / JS (single-file HTML artifacts)
+    { tag: [tags.tagName, tags.angleBracket], color: palette.keyword },
+    { tag: tags.attributeName, color: palette.number },
+    { tag: tags.attributeValue, color: palette.code },
+    { tag: [tags.propertyName, tags.function(tags.variableName)], color: palette.url },
   ]);
+}
+
+function writingTheme(dark: boolean, fontFamily: string) {
+  return EditorView.theme(
+    {
+      "&": {
+        color: "var(--foreground)",
+        backgroundColor: "transparent",
+        fontSize: "15px",
+      },
+      ".cm-scroller": { overflow: "visible", fontFamily, lineHeight: "1.8" },
+      ".cm-content": { padding: "0 0 38vh", caretColor: "var(--primary)" },
+      ".cm-line": { padding: "0" },
+      ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection": {
+        backgroundColor: "color-mix(in srgb, var(--primary) 22%, transparent) !important",
+      },
+      ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--primary)", borderLeftWidth: "2px" },
+      "&.cm-focused": { outline: "none" },
+      ".cm-placeholder": { color: "var(--faint)" },
+    },
+    { dark },
+  );
 }
 
 function editorTheme(dark: boolean, fontFamily: string) {
@@ -133,22 +168,32 @@ function editorTheme(dark: boolean, fontFamily: string) {
 
 export function CodeMirrorEditor({
   value,
-  resetKey,
   onChange,
   readOnly,
   dark,
   fontFamily,
+  language = "markdown",
+  ariaLabel,
+  variant = "code",
+  onView,
 }: CodeMirrorEditorProps) {
   const hostRef = useRef<HTMLElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
-  const valueRef = useRef(value);
-  valueRef.current = value;
-  const appliedResetRef = useRef(resetKey);
   const suppressChangeRef = useRef(false);
   const editable = useRef(new Compartment()).current;
   const theme = useRef(new Compartment()).current;
-  const mountConfig = useRef({ value, readOnly, dark, fontFamily }).current;
+  const mountConfig = useRef({
+    value,
+    readOnly,
+    dark,
+    fontFamily,
+    language,
+    ariaLabel,
+    variant,
+  }).current;
+  const onViewRef = useRef(onView);
+  onViewRef.current = onView;
   onChangeRef.current = onChange;
 
   useEffect(() => {
@@ -156,8 +201,9 @@ export function CodeMirrorEditor({
     const state = EditorState.create({
       doc: mountConfig.value,
       extensions: [
-        lineNumbers(),
-        highlightActiveLineGutter(),
+        ...(mountConfig.variant === "writing"
+          ? []
+          : [lineNumbers(), highlightActiveLineGutter(), highlightActiveLine()]),
         history(),
         drawSelection(),
         dropCursor(),
@@ -165,11 +211,22 @@ export function CodeMirrorEditor({
         bracketMatching(),
         closeBrackets(),
         autocompletion(),
-        highlightActiveLine(),
         highlightSelectionMatches(),
         EditorView.lineWrapping,
-        EditorView.contentAttributes.of({ "aria-label": "Markdown source editor" }),
-        markdown(),
+        EditorView.contentAttributes.of({
+          "aria-label":
+            mountConfig.ariaLabel ??
+            (mountConfig.language === "html"
+              ? "HTML source editor"
+              : mountConfig.language === "text"
+                ? "File contents"
+                : "Markdown source editor"),
+        }),
+        ...(mountConfig.language === "html"
+          ? [html()]
+          : mountConfig.language === "text"
+            ? []
+            : [markdown()]),
         keymap.of([
           ...closeBracketsKeymap,
           ...defaultKeymap,
@@ -183,7 +240,9 @@ export function CodeMirrorEditor({
           EditorView.editable.of(!mountConfig.readOnly),
         ]),
         theme.of([
-          editorTheme(mountConfig.dark, mountConfig.fontFamily),
+          mountConfig.variant === "writing"
+            ? writingTheme(mountConfig.dark, mountConfig.fontFamily)
+            : editorTheme(mountConfig.dark, mountConfig.fontFamily),
           syntaxHighlighting(markdownHighlightStyle(mountConfig.dark), { fallback: true }),
         ]),
         EditorView.updateListener.of((update) => {
@@ -195,7 +254,9 @@ export function CodeMirrorEditor({
     });
     const view = new EditorView({ state, parent: hostRef.current });
     viewRef.current = view;
+    onViewRef.current?.(view);
     return () => {
+      onViewRef.current?.(null);
       view.destroy();
       viewRef.current = null;
     };
@@ -217,25 +278,27 @@ export function CodeMirrorEditor({
   useEffect(() => {
     viewRef.current?.dispatch({
       effects: theme.reconfigure([
-        editorTheme(dark, fontFamily),
+        variant === "writing" ? writingTheme(dark, fontFamily) : editorTheme(dark, fontFamily),
         syntaxHighlighting(markdownHighlightStyle(dark), { fallback: true }),
       ]),
     });
-  }, [dark, fontFamily, theme]);
+  }, [dark, fontFamily, theme, variant]);
 
-  // The host debounces `value`, so it trails this view's doc while the
-  // user types; applying every prop update would rewind the caret and
-  // drop keystrokes. Only an explicit document reset applies it.
   useEffect(() => {
-    if (appliedResetRef.current === resetKey) return;
-    appliedResetRef.current = resetKey;
     const view = viewRef.current;
-    const next = valueRef.current;
-    if (!view || view.state.doc.toString() === next) return;
+    if (!view || view.state.doc.toString() === value) return;
     suppressChangeRef.current = true;
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: next } });
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
     suppressChangeRef.current = false;
-  }, [resetKey]);
+  }, [value]);
 
-  return <section ref={hostRef} className="h-full min-h-0" aria-label="Markdown source editor" />;
+  return (
+    <section
+      ref={hostRef}
+      className={variant === "writing" ? "markdown-source-surface" : "h-full min-h-0"}
+      aria-label={
+        ariaLabel ?? (language === "html" ? "HTML source editor" : "Markdown source editor")
+      }
+    />
+  );
 }

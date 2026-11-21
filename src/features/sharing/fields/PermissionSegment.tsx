@@ -4,7 +4,7 @@
 // for file kinds that have no realtime surface. The caller keeps
 // `value` out of the disabled modes.
 
-import { Segmented } from "@/features/settings/controls";
+import { Segmented } from "@/components/ui/segmented";
 import type { SharePermission } from "@/lib/api/client";
 
 const DESCRIPTIONS: Record<SharePermission, string> = {

@@ -1,7 +1,13 @@
 import { unzipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import type { FileRow } from "../types";
-import { MAX_SITE_ZIP_BYTES, serveThumb, streamFileResponse } from "./responses";
+import {
+  isActiveMime,
+  MAX_SITE_ZIP_BYTES,
+  safeMime,
+  serveThumb,
+  streamFileResponse,
+} from "./responses";
 
 const blob = {
   elements: [{ id: "el1", type: "rectangle", x: 0, y: 0 }],
@@ -18,6 +24,7 @@ function row(overrides: Partial<FileRow> = {}): FileRow {
     kind: "excalidraw",
     version: 3,
     size_bytes: 128,
+    mime: null,
     has_thumb: false,
     thumb_updated_at: 0,
     created_at: 1,
@@ -179,5 +186,31 @@ describe("serveThumb", () => {
     );
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("etag")).toBe('"abc"');
+  });
+});
+
+describe("safeMime", () => {
+  it("normalizes well-formed types and drops parameters", () => {
+    expect(safeMime("Text/HTML; charset=utf-8")).toBe("text/html");
+    expect(
+      safeMime("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    ).toBe("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+  });
+  it("falls back for junk", () => {
+    expect(safeMime(null)).toBe("application/octet-stream");
+    expect(safeMime("")).toBe("application/octet-stream");
+    expect(safeMime("text/html\r\nx-evil: 1")).toBe("application/octet-stream");
+    expect(safeMime("nonsense")).toBe("application/octet-stream");
+  });
+});
+
+describe("isActiveMime", () => {
+  it("flags content a browser can execute", () => {
+    for (const m of ["text/html", "image/svg+xml", "application/xhtml+xml", "text/xml"]) {
+      expect(isActiveMime(m)).toBe(true);
+    }
+    for (const m of ["application/pdf", "image/png", "text/plain", "video/mp4"]) {
+      expect(isActiveMime(m)).toBe(false);
+    }
   });
 });

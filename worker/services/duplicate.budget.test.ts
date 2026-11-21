@@ -14,6 +14,7 @@ function row(id: string, overrides: Partial<FileRow> = {}): FileRow {
     kind: "excalidraw",
     version: 1,
     size_bytes: 10,
+    mime: null,
     has_thumb: false,
     thumb_updated_at: 0,
     created_at: 1,
@@ -89,14 +90,16 @@ function makeDb(): DatabaseSync {
     CREATE TABLE folders (
       id TEXT PRIMARY KEY, owner TEXT NOT NULL, parent_id TEXT, name TEXT NOT NULL DEFAULT '',
       created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0,
-      deleted_at INTEGER, trashed_via TEXT, starred_at INTEGER
+      deleted_at INTEGER, trashed_via TEXT, starred_at INTEGER,
+      icon TEXT, color TEXT, description TEXT, status TEXT, pinned_at INTEGER
     );
     CREATE TABLE files (
       id TEXT PRIMARY KEY, owner TEXT NOT NULL, folder_id TEXT, name TEXT NOT NULL DEFAULT '',
       kind TEXT NOT NULL DEFAULT 'excalidraw', version INTEGER NOT NULL DEFAULT 1,
       size_bytes INTEGER NOT NULL DEFAULT 0, has_thumb INTEGER NOT NULL DEFAULT 0,
       thumb_updated_at INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0,
-      updated_at INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER, trashed_via TEXT, starred_at INTEGER
+      updated_at INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER, trashed_via TEXT, starred_at INTEGER,
+      mime TEXT
     );
     CREATE TABLE taggings (
       tag_id TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL,

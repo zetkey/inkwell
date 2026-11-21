@@ -29,25 +29,37 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit02Icon,
+  FileExportIcon,
+  FloppyDiskIcon,
   KeyboardIcon,
+  PresentationBarChart01Icon,
   StarIcon,
 } from "@hugeicons/core-free-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { openShortcutSheet } from "@/components/shell/shellStore";
 import { useFile } from "@/data/files";
 import { itemActions } from "@/features/actions/useItemActions";
-import { ApiError, type FilesQuery, files, type ItemRef, type LoadedFile } from "@/lib/api/client";
+import {
+  ApiError,
+  type FileBlob,
+  type FilesQuery,
+  files,
+  type ItemRef,
+  type LoadedFile,
+} from "@/lib/api/client";
 import { keys } from "@/lib/api/query-keys";
 import type { Command } from "@/lib/commands/registry";
 import { errorMessage } from "@/lib/errors";
 import { useTheme } from "@/lib/theme";
-import { EditorErrorState, EditorLoadingState, EditorSuspense } from "./EditorChrome";
+import { EditorErrorState, EditorLoadingState } from "./EditorChrome";
 import { EditorHeader } from "./EditorHeader";
 import { EditorOverlays } from "./EditorOverlays";
 import type { EditorHeaderBridge, RenderEditorHeader } from "./editorHeaderBridge";
-import { useWorkingCopy } from "./useWorkingCopy";
+import { FileViewerPage } from "./FileViewerPage";
+import { EditorDropZone } from "./shared/EditorDropZone";
+import { notifySaved } from "./shared/saveFeedback";
 
 const DrawioEditor = lazy(() => import("./DrawioEditor"));
 const ExcalidrawEditor = lazy(() => import("./ExcalidrawEditor"));
@@ -55,8 +67,12 @@ const ExcalidrawMenu = lazy(() => import("./ExcalidrawMenu"));
 const MarkdownEditor = lazy(() => import("./MarkdownEditor"));
 const StaticSiteEditor = lazy(() => import("./StaticSiteEditor"));
 
+function EditorSuspense({ children }: { children: React.ReactNode }) {
+  return <Suspense fallback={<EditorLoadingState label="Loading editor…" />}>{children}</Suspense>;
+}
+
 function folderUrl(folderId: string | null): string {
-  return folderId ? `/folders/${folderId}` : "/";
+  return folderId ? `/folders/${folderId}` : "/files";
 }
 
 export function EditorPage() {
@@ -64,56 +80,21 @@ export function EditorPage() {
   const qc = useQueryClient();
   const fileQuery = useFile(id);
   const navigate = useNavigate();
-  // The working copy, its sticky save target and 409 recovery live in one
-  // shared hook (see `useWorkingCopy`).
-  const {
-    loaded,
-    setLoaded,
-    conflict,
-    setConflict,
-    getTarget,
-    editorKey,
-    bumpEditorKey,
-    save,
-    reload,
-    remountAfterConflict,
-  } = useWorkingCopy({
-    save: (target, version, blob) => files.save(target, version, blob),
-    load: (target) => files.load(target),
-    cacheKey: (target) => keys.files.detail(target),
-    nextLoaded: (prev, meta, blob) => ({
-      meta: {
-        id: prev.meta.id,
-        name: meta.name,
-        kind: meta.kind,
-        version: meta.version,
-        updatedAt: meta.updatedAt,
-        folderId: prev.meta.folderId,
-        // Once we've saved at least once, the editor's thumb pipeline will
-        // have shipped (or is about to ship) a thumb. Server `loadRow` is
-        // the source of truth on next cold load.
-        hasThumb: prev.meta.hasThumb,
-        starredAt: prev.meta.starredAt ?? meta.starredAt ?? null,
-      },
-      blob,
-      permission: "write",
-      allowDownload: true,
-      sharedBy: null,
-      shareExpiresAt: null,
-    }),
-    onSaved: () => {
-      // Refresh the explorer rows; scoped to lists so the active detail query
-      // does not refetch on every save.
-      qc.invalidateQueries({ queryKey: ["files", "list"] });
-      qc.invalidateQueries({ queryKey: ["folders", "list"] });
-    },
-  });
+  const [loaded, setLoaded] = useState<LoadedFile | null>(null);
   const loadedRef = useRef(loaded);
   loadedRef.current = loaded;
+  // Set when the save lifecycle hit a 409 and re-fetched: shows the
+  // non-blocking conflict banner in the header.
+  const [conflict, setConflict] = useState(false);
+  // Bumped by the conflict banner's Reload to remount the editor with
+  // the freshly loaded copy.
+  const [editorKey, setEditorKey] = useState(0);
   // Optimistic star state until the next detail refetch confirms it.
   const [starOverride, setStarOverride] = useState<{ id: string; starred: boolean } | null>(null);
   // Bumped to start the header's inline rename (palette "Rename", F2).
   const [renameNonce, setRenameNonce] = useState(0);
+  // Bumped to open the header's "Export as…" dialog (palette, ⌘⇧S).
+  const [exportNonce, setExportNonce] = useState(0);
   // Latest bridge from the mounted editor (flush / requestLeave for
   // palette-driven actions).
   const bridgeRef = useRef<EditorHeaderBridge | null>(null);
@@ -126,7 +107,7 @@ export function EditorPage() {
   useEffect(() => {
     if (loaded) return;
     if (fileQuery.data) setLoaded(fileQuery.data);
-  }, [fileQuery.data, loaded, setLoaded]);
+  }, [fileQuery.data, loaded]);
 
   // Metadata-only mirror of later detail refetches (see file header).
   // If a refetch raced a save and cached an older version than ours,
@@ -153,7 +134,7 @@ export function EditorPage() {
         ? { ...prev, meta: { ...prev.meta, name, folderId, starredAt } }
         : prev,
     );
-  }, [fileQuery.data, qc, setLoaded]);
+  }, [fileQuery.data, qc]);
 
   // When navigating to a *different* file, reset the working copy so the
   // seed effect above re-runs against the new query data.
@@ -169,10 +150,9 @@ export function EditorPage() {
       setLoaded(null);
       setConflict(false);
       setStarOverride(null);
-      bumpEditorKey();
     }
     prevIdRef.current = id;
-  }, [id, setLoaded, setConflict, bumpEditorKey]);
+  }, [id]);
 
   // Keep the folder listing warm: the shared item actions resolve names,
   // tags and parents from list caches (otherwise they fetch the whole
@@ -187,15 +167,61 @@ export function EditorPage() {
 
   const starred = starOverride?.id === id ? starOverride.starred : loaded?.meta.starredAt != null;
 
-  const saveThumb = useCallback(
-    async (svg: string) => {
-      // Thumbnails follow the same working copy as the save, not the route.
-      const target = getTarget();
-      if (!target) return;
-      await files.putThumb(target, svg);
+  // Reload after a 409 conflict: bypass cache and force a fresh fetch.
+  // Only the save lifecycle's conflict path calls this.
+  const reload = useCallback(async () => {
+    const ls = await qc.fetchQuery({
+      queryKey: keys.files.detail(id),
+      queryFn: () => files.load(id),
+      staleTime: 0,
+    });
+    setLoaded(ls);
+    setConflict(true);
+    return ls;
+  }, [qc, id]);
+
+  // Save: throws ApiError(409) on version conflict so the editor's
+  // autosave loop can react. On success update both local state and the
+  // cached file detail row so revisiting this editor doesn't resurrect
+  // an old version from React Query's staleTime/gcTime Infinity cache.
+  const save = useCallback(
+    async (version: number, blob: FileBlob) => {
+      const m = await files.save(id, version, blob);
+      const prev = loadedRef.current;
+      const nextLoaded: LoadedFile = {
+        meta: {
+          id,
+          name: m.name,
+          kind: m.kind,
+          version: m.version,
+          updatedAt: m.updatedAt,
+          folderId: prev?.meta.folderId ?? null,
+          // Once we've saved at least once, the editor's thumb pipeline
+          // will have shipped (or is about to ship) a thumb. Server
+          // `loadRow` is the source of truth on next cold load.
+          hasThumb: prev?.meta.hasThumb ?? false,
+          starredAt: prev?.meta.starredAt ?? m.starredAt ?? null,
+        },
+        blob,
+        permission: "write",
+        allowDownload: true,
+        sharedBy: null,
+        shareExpiresAt: null,
+      };
+      setLoaded(nextLoaded);
+      qc.setQueryData(keys.files.detail(id), nextLoaded);
+      // Update cached file-list rows so explorer views show fresh data.
+      // Scope to list queries only — invalidating `keys.files.all` would
+      // also match `keys.files.detail(id)` (prefix match) and trigger a
+      // refetch of the active file on every save.
+      qc.invalidateQueries({ queryKey: ["files", "list"] });
+      qc.invalidateQueries({ queryKey: ["folders", "list"] });
+      return { version: m.version };
     },
-    [getTarget],
+    [id, qc],
   );
+
+  const saveThumb = useCallback((svg: string) => files.putThumb(id, svg), [id]);
 
   // After a thumb upload, the server's `thumb_updated_at` advances.
   // Explorer cards build their `<img src>` from it, so list queries must
@@ -263,7 +289,7 @@ export function EditorPage() {
       setLoaded((prev) => (prev ? { ...prev, meta: { ...prev.meta, name: next.trim() } } : prev));
       return true;
     },
-    [ref, setLoaded],
+    [ref],
   );
 
   // Palette / registry overrides with editor semantics. Only chords the
@@ -278,6 +304,34 @@ export function EditorPage() {
         keys: ["f2"],
         group: "file",
         run: () => setRenameNonce((n) => n + 1),
+      },
+      {
+        id: "file.save",
+        icon: FloppyDiskIcon,
+        label: "Save now",
+        keys: ["mod+s"],
+        group: "file",
+        run: () => {
+          const save = bridgeRef.current?.saveNow;
+          if (save) void save().then((ok) => ok && notifySaved());
+        },
+      },
+      {
+        id: "view.present",
+        icon: PresentationBarChart01Icon,
+        label: "Present",
+        keys: ["mod+shift+p"],
+        group: "file",
+        when: () => !!bridgeRef.current?.present,
+        run: () => bridgeRef.current?.present?.(),
+      },
+      {
+        id: "file.export",
+        icon: FileExportIcon,
+        label: "Export as…",
+        keys: ["mod+shift+s"],
+        group: "file",
+        run: () => setExportNonce((n) => n + 1),
       },
       {
         id: "item.star",
@@ -296,7 +350,7 @@ export function EditorPage() {
       {
         id: "item.download",
         icon: Download01Icon,
-        label: "Download",
+        label: "Download original",
         group: "file",
         run: () => void download(),
       },
@@ -329,10 +383,27 @@ export function EditorPage() {
     [starred, toggleStar, duplicate, download, trash, handleBack],
   );
 
-  const overlays = <EditorOverlays file={loaded ? ref : null} overrides={overrides} />;
+  const overlays = (
+    <>
+      <EditorOverlays file={loaded ? ref : null} overrides={overrides} />
+      {loaded ? (
+        <EditorDropZone
+          folderId={loaded.meta.folderId}
+          onOpenFolder={() => {
+            const go = () => navigate(folderUrl(loadedRef.current?.meta.folderId ?? null));
+            bridgeRef.current ? bridgeRef.current.requestLeave(go) : go();
+          }}
+        />
+      ) : null}
+    </>
+  );
 
   // A failed *refetch* keeps the editor (and unsaved work) on screen;
   // only a failed first load shows the error page.
+  // Uploaded files (`kind: "file"`) have no JSON blob: `files.load` 415s.
+  if (fileQuery.error instanceof ApiError && fileQuery.error.status === 415) {
+    return <FileViewerPage id={id} />;
+  }
   if (fileQuery.isError && !loaded) {
     return <EditorErrorState message={errorMessage(fileQuery.error, "load failed")} />;
   }
@@ -364,14 +435,14 @@ export function EditorPage() {
         onDownload={() => void download()}
         onEditTags={() => itemActions.editTags([ref])}
         onTrash={() => void trash()}
-        onShowShortcuts={openShortcutSheet}
+        exportNonce={exportNonce}
         conflict={
           conflict
             ? {
                 onReload: () => {
                   bridge.discard();
                   setConflict(false);
-                  bumpEditorKey();
+                  setEditorKey((k) => k + 1);
                 },
                 onDismiss: () => setConflict(false),
               }
@@ -453,7 +524,6 @@ export function EditorPage() {
         <ExcalidrawEditor
           key={editorKey}
           {...common}
-          onReload={remountAfterConflict}
           chrome={<ExcalidrawMenu variant="owner" theme={themeMode} onSelectTheme={setThemeMode} />}
         />
         {overlays}

@@ -1,8 +1,24 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import type { FileBlob, LoadedFile, MarkdownNotesFileBlob, NotesFileBlob } from "@/lib/api/client";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { toast } from "sonner";
+import {
+  type FileBlob,
+  files,
+  type LoadedFile,
+  type MarkdownNotesFileBlob,
+  type NotesFileBlob,
+} from "@/lib/api/client";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
-import type { EditorHeaderBridge, RenderEditorHeader } from "./editorHeaderBridge";
+import type { EditorExporter, EditorHeaderBridge, RenderEditorHeader } from "./editorHeaderBridge";
 import { LeaveConfirmDialog } from "./lifecycle/LeaveConfirmDialog";
 import { useLeaveConfirm } from "./lifecycle/useLeaveConfirm";
 import { useSaveLifecycle } from "./lifecycle/useSaveLifecycle";
@@ -14,11 +30,18 @@ import {
   isCanonicalMarkdownBlob,
   notesBlobToMarkdown,
 } from "./markdown/compat";
-import { MarkdownPreview } from "./markdown/MarkdownPreview";
-import { type MarkdownSnapshot, MarkdownSync } from "./markdown/markdownSync";
 import { markdownToThumbSvg } from "./markdown/thumb";
 import { loadNotesFont } from "./notes/fontLoader";
-import { fontStack, useNotesPreferences, widthMaxClass } from "./notes/preferences";
+import {
+  fontStack,
+  NOTES_FONTS,
+  type NotesEditorFont,
+  useNotesPreferences,
+  widthMaxClass,
+} from "./notes/preferences";
+import { downloadText, exportBaseName } from "./shared/exportFile";
+
+const CrepeEditor = lazy(() => import("./markdown/CrepeEditor"));
 
 type SaveFn = (version: number, blob: FileBlob) => Promise<{ version: number }>;
 type ThumbFn = ((svg: string) => Promise<void>) | null;
@@ -46,58 +69,18 @@ export default function MarkdownEditor({
   reload,
   renderHeader,
 }: MarkdownEditorProps) {
-  const readOnly = loaded.permission === "read";
+  const readOnly = loaded.permission !== "write";
   const blob = loaded.blob as NotesFileBlob;
   const canonical = initialSource(blob);
   const [source, setSource] = useState<string | null>(canonical);
   const [loadError, setLoadError] = useState<string | null>(null);
   const { resolved } = useTheme();
-  const { width, font, layout } = useNotesPreferences();
+  const { width, font, mode } = useNotesPreferences();
+  const [epoch, setEpoch] = useState(0);
   const selectedFont = fontStack(font);
   const initialFingerprint = fingerprintMarkdown(canonical ?? "");
-  // Blob produced by our own last save. The parent stores that object in
-  // `loaded.blob`; re-seeding from it would rewind CodeMirror while the
-  // user keeps typing.
-  const ownBlobRef = useRef<FileBlob | null>(null);
+  const latestRef = useRef({ source: canonical ?? "", fp: initialFingerprint });
   const thumb = useThumbPipeline({ saveThumb, onThumbSaved, readOnly });
-
-  // Typing only records the newest text; the fingerprint, the preview
-  // re-render and the save notification are debounced (see `MarkdownSync`).
-  const flushRef = useRef<(snapshot: MarkdownSnapshot) => void>(() => {});
-  const syncRef = useRef<MarkdownSync | null>(null);
-  if (syncRef.current === null) {
-    syncRef.current = new MarkdownSync({
-      initial: { source: canonical ?? "", fp: initialFingerprint },
-      fingerprint: fingerprintMarkdown,
-      onFlush: (snapshot) => flushRef.current(snapshot),
-    });
-  }
-  const sync = syncRef.current;
-
-  // Registered before the save lifecycle so these run first on unmount /
-  // tab close: the flush reports the newest text while the lifecycle can
-  // still schedule the save (afterwards it has already stopped). Without
-  // this, continuous typing never crosses the debounce window and the
-  // keyboard-only path to the server (beforeunload) would miss it.
-  useEffect(() => {
-    const flush = () => sync.flush();
-    const onVisibility = () => {
-      // Symmetric with the save lifecycle: only a hidden tab is a reason
-      // to report the text early.
-      if (document.visibilityState === "hidden") sync.flush();
-    };
-    window.addEventListener("beforeunload", flush);
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      window.removeEventListener("beforeunload", flush);
-      document.removeEventListener("visibilitychange", onVisibility);
-      sync.dispose();
-    };
-  }, [sync]);
-
-  // Bumped when a fresh document is loaded so CodeMirror applies it even
-  // though `source` normally trails the editor's own doc.
-  const [resetNonce, setResetNonce] = useState(0);
 
   const lifecycle = useSaveLifecycle<FileBlob, LoadedFile>({
     initialVersion: loaded.meta.version,
@@ -105,7 +88,7 @@ export default function MarkdownEditor({
     readOnly,
     transport: { save, reload },
     getLatest: () => {
-      const latest = sync.read();
+      const latest = latestRef.current;
       return {
         fp: latest.fp,
         blob: {
@@ -116,7 +99,6 @@ export default function MarkdownEditor({
       };
     },
     onSaved: (saved) => {
-      ownBlobRef.current = saved.blob;
       const persisted = saved.blob as MarkdownNotesFileBlob;
       thumb.request(saved.fp, async () => markdownToThumbSvg(persisted.source));
     },
@@ -125,17 +107,12 @@ export default function MarkdownEditor({
 
   const lifecycleRef = useRef(lifecycle);
   lifecycleRef.current = lifecycle;
-  flushRef.current = (snapshot) => {
-    setSource(snapshot.source);
-    lifecycleRef.current.notifyChange();
-  };
   const thumbRef = useRef(thumb);
   thumbRef.current = thumb;
   const loadedVersionRef = useRef(loaded.meta.version);
   loadedVersionRef.current = loaded.meta.version;
 
   useEffect(() => {
-    if (loaded.blob === ownBlobRef.current) return;
     let cancelled = false;
     setLoadError(null);
     const currentBlob = loaded.blob as NotesFileBlob;
@@ -143,9 +120,9 @@ export default function MarkdownEditor({
       .then((markdown) => {
         if (cancelled) return;
         const fp = fingerprintMarkdown(markdown);
-        sync.reset({ source: markdown, fp });
+        latestRef.current = { source: markdown, fp };
         setSource(markdown);
-        setResetNonce((n) => n + 1);
+        setEpoch((n) => n + 1);
         thumbRef.current.reset();
         lifecycleRef.current.reset(loadedVersionRef.current, fp);
       })
@@ -160,49 +137,79 @@ export default function MarkdownEditor({
     return () => {
       cancelled = true;
     };
-    // Our own save swaps the blob reference too; that case is skipped
-    // above so it can't overwrite unsaved CodeMirror state.
-  }, [loaded.blob, sync]);
+    // Version bumps after every save while the blob reference stays stable;
+    // re-running then would overwrite unsaved CodeMirror state.
+  }, [loaded.blob]);
 
   useEffect(() => {
     void loadNotesFont(font);
   }, [font]);
 
-  // One transaction: record the text only. The debounced flush mirrors it
-  // into React state and notifies the save lifecycle.
   const handleChange = useCallback(
     (next: string) => {
-      sync.push(next);
+      const fp = fingerprintMarkdown(next);
+      latestRef.current = { source: next, fp };
+      setSource(next);
+      lifecycle.notifyChange();
     },
-    [sync],
+    [lifecycle],
   );
-
-  // Discard must also drop the un-reported window, or the unmount flush
-  // would hand the discarded text to the save lifecycle.
-  const discardPendingLocalWork = useCallback(() => {
-    sync.discard();
-    lifecycleRef.current.discardPendingLocalWork();
-  }, [sync]);
 
   const leave = useLeaveConfirm({
     isDirty: lifecycle.isDirty,
     saveNow: lifecycle.saveNow,
-    discardPendingLocalWork,
-    errorMessage: lifecycle.errorMessage,
+    discardPendingLocalWork: lifecycle.discardPendingLocalWork,
   });
-  const { saveNow } = lifecycle;
+  const { saveNow, discardPendingLocalWork } = lifecycle;
   const { requestLeave } = leave;
+  const fileName = loaded.meta.name;
+  const exporters = useMemo<EditorExporter[]>(() => {
+    const base = exportBaseName(fileName);
+    const current = () => latestRef.current.source;
+    return [
+      {
+        id: "md",
+        label: ".md",
+        hint: "The Markdown source as plain text.",
+        run: () => downloadText(current(), `${base}.md`, "text/markdown"),
+      },
+      {
+        id: "html",
+        label: "HTML",
+        hint: "A standalone page with styles included (math loads KaTeX from a CDN).",
+        run: async () => {
+          const { markdownToHtmlDocument } = await import("./markdown/exportHtml");
+          downloadText(
+            await markdownToHtmlDocument(current(), fileName),
+            `${base}.html`,
+            "text/html",
+          );
+        },
+      },
+      {
+        id: "pdf",
+        label: "PDF",
+        hint: "Opens the print dialog — choose “Save as PDF”.",
+        run: async () => {
+          const { printMarkdownAsPdf } = await import("./markdown/exportHtml");
+          await printMarkdownAsPdf(current(), fileName);
+        },
+      },
+    ];
+  }, [fileName]);
   const bridge = useMemo<EditorHeaderBridge>(
     () => ({
       status: source === null ? "loading" : readOnly ? null : lifecycle.status,
       errorMessage: loadError ?? lifecycle.errorMessage,
-      saveNow: readOnly || source === null ? null : () => void saveNow(),
+      saveNow: readOnly || source === null ? null : saveNow,
       flush: saveNow,
       discard: discardPendingLocalWork,
       requestLeave,
       toolbar: <MarkdownEditorChrome />,
+      exporters,
     }),
     [
+      exporters,
       source,
       readOnly,
       loadError,
@@ -214,9 +221,72 @@ export default function MarkdownEditor({
     ],
   );
 
-  const previewSource = useDeferredValue(source ?? "");
-  const showSource = layout !== "preview";
-  const showPreview = layout !== "source";
+  // ── Scroll continuity between Write and Source ──────────────────
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const ratioRef = useRef(0);
+  const restoringRef = useRef(false);
+  const lastModeRef = useRef(mode);
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || restoringRef.current) return;
+    const max = el.scrollHeight - el.clientHeight;
+    ratioRef.current = max > 0 ? el.scrollTop / max : 0;
+  }, []);
+  const restoreScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    restoringRef.current = true;
+    const apply = () => {
+      const max = el.scrollHeight - el.clientHeight;
+      el.scrollTop = max * ratioRef.current;
+    };
+    apply();
+    requestAnimationFrame(() => {
+      apply();
+      window.setTimeout(() => {
+        restoringRef.current = false;
+      }, 120);
+    });
+  }, []);
+  const pendingRestoreRef = useRef(false);
+  useLayoutEffect(() => {
+    if (lastModeRef.current === mode) return;
+    lastModeRef.current = mode;
+    pendingRestoreRef.current = true;
+  }, [mode]);
+  const consumeRestore = useCallback(() => {
+    if (!pendingRestoreRef.current) return;
+    pendingRestoreRef.current = false;
+    restoreScroll();
+  }, [restoreScroll]);
+
+  const folderId = loaded.meta.folderId ?? null;
+  const uploadImage = useCallback(
+    async (file: File) => {
+      try {
+        const ext = file.type.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "png";
+        const name =
+          file.name && file.name !== "image.png" ? file.name : `image-${Date.now()}.${ext}`;
+        const meta = await files.uploadRaw(file, { name, folderId });
+        return files.rawUrl(meta.id);
+      } catch (reason) {
+        toast.error(reason instanceof Error ? reason.message : "Image upload failed");
+        throw reason;
+      }
+    },
+    [folderId],
+  );
+
+  const headingFamily = useMemo(() => {
+    const option = NOTES_FONTS.find((f) => f.value === (font as NotesEditorFont));
+    return option && option.family !== "Sans" ? option.stack : "var(--font-display)";
+  }, [font]);
+  const bodySize = NOTES_FONTS.find((f) => f.value === font)?.family === "Mono" ? "15px" : "17px";
+  const surfaceStyle = {
+    "--ink-md-body": selectedFont,
+    "--ink-md-heading": headingFamily,
+    "--ink-md-size": bodySize,
+  } as React.CSSProperties;
 
   return (
     <div className="flex h-full w-full flex-col">
@@ -227,47 +297,52 @@ export default function MarkdownEditor({
         </div>
       ) : (
         <div
-          className={cn(
-            "markdown-editor-layout min-h-0 flex-1",
-            layout === "split" && "markdown-layout-split",
-          )}
+          ref={scrollRef}
+          onScroll={handleScroll}
+          className="markdown-scroll min-h-0 flex-1 overflow-y-auto"
+          style={surfaceStyle}
+          data-mode={mode}
         >
-          {showSource && (
-            <section className="markdown-source-pane min-h-0" aria-label="Markdown source">
-              <div className={cn("mx-auto h-full w-full", widthMaxClass(width))}>
-                <CodeMirrorEditor
-                  value={source}
-                  resetKey={resetNonce}
-                  onChange={handleChange}
-                  readOnly={readOnly}
-                  dark={resolved === "dark"}
-                  fontFamily={selectedFont}
-                />
-              </div>
-            </section>
-          )}
-          {showPreview && (
-            <section
-              className="markdown-preview-pane min-h-0 overflow-y-auto"
-              aria-label="Markdown preview"
-            >
-              <div
-                className={cn("mx-auto w-full px-5 py-8 sm:px-8 lg:py-10", widthMaxClass(width))}
+          <div
+            className={cn(
+              "mx-auto w-full px-5 pt-8 sm:px-10 sm:pt-12 lg:pt-14",
+              widthMaxClass(width),
+            )}
+          >
+            {mode === "source" ? (
+              <CodeMirrorEditor
+                variant="writing"
+                value={source}
+                onChange={handleChange}
+                readOnly={readOnly}
+                dark={resolved === "dark"}
+                fontFamily={fontStack("jetbrains-mono")}
+                onView={(view) => {
+                  if (view) consumeRestore();
+                }}
+              />
+            ) : (
+              <Suspense
+                fallback={
+                  <div className="py-10 text-sm text-muted-foreground">Loading editor…</div>
+                }
               >
-                <MarkdownPreview
-                  source={previewSource}
-                  dark={resolved === "dark"}
-                  fontFamily={selectedFont}
+                <CrepeEditor
+                  key={epoch}
+                  initialValue={latestRef.current.source}
+                  readOnly={readOnly}
+                  onChange={handleChange}
+                  onImageUpload={uploadImage}
+                  onReady={consumeRestore}
                 />
-              </div>
-            </section>
-          )}
+              </Suspense>
+            )}
+          </div>
         </div>
       )}
       <LeaveConfirmDialog
         open={leave.open}
         busy={leave.busy}
-        errorMessage={leave.errorMessage}
         onOpenChange={leave.onOpenChange}
         onDiscard={leave.discard}
         onSaveAndLeave={() => void leave.saveAndLeave()}

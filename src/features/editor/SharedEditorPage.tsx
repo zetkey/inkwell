@@ -22,7 +22,8 @@ import { shouldOpenCollab } from "./collab/gating";
 import { collabPathForShare } from "./collab/paths";
 import { EditorErrorState, EditorLoadingState, EditorSuspense } from "./EditorChrome";
 import { EditorHeader } from "./EditorHeader";
-import type { RenderEditorHeader } from "./editorHeaderBridge";
+import { type RenderEditorHeader, staticBridge } from "./editorHeaderBridge";
+import { FileViewer } from "./FileViewer";
 import { SharedStaticSitePreviewRedirect } from "./StaticSitePreviewRedirect";
 import { useWorkingCopy } from "./useWorkingCopy";
 
@@ -142,6 +143,47 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
     );
   }
 
+  if (loaded.meta.kind === "file") {
+    // Uploaded file: read-only viewer under the visitor header.
+    const rawUrl = fileId ? shares.folderFileRawUrl(token, fileId) : shares.rawUrl(token);
+    return (
+      <div className="flex h-dvh w-full flex-col overflow-hidden bg-background">
+        <EditorHeader
+          bridge={staticBridge()}
+          file={{
+            id: loaded.meta.id,
+            name: loaded.meta.name,
+            kind: loaded.meta.kind,
+            version: loaded.meta.version,
+            folderId: null,
+          }}
+          onBack={fileId ? () => navigate(`/share/${token}`) : null}
+          backLabel="Back to shared folder"
+          visitor={{
+            expiresAt: loaded.shareExpiresAt,
+            sharedBy: loaded.sharedBy
+              ? `${loaded.sharedBy.firstName} ${loaded.sharedBy.lastName}`.trim() || null
+              : null,
+            permission: "read",
+            allowDownload: loaded.allowDownload,
+            onDownload: () => {
+              window.location.href = downloadHref;
+            },
+          }}
+        />
+        <main className="min-h-0 flex-1">
+          <FileViewer
+            name={loaded.meta.name}
+            mime={loaded.meta.mime ?? null}
+            sizeBytes={loaded.meta.sizeBytes ?? null}
+            rawUrl={rawUrl}
+            downloadUrl={loaded.allowDownload ? downloadHref : null}
+          />
+        </main>
+      </div>
+    );
+  }
+
   const renderHeader: RenderEditorHeader = (bridge) => (
     <EditorHeader
       bridge={bridge}
@@ -159,7 +201,9 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
         sharedBy: loaded.sharedBy
           ? `${loaded.sharedBy.firstName} ${loaded.sharedBy.lastName}`.trim() || null
           : null,
-        permission: loaded.permission,
+        // The redesigned header only knows read/write; a collab link is
+        // editable, so show it as "Can edit".
+        permission: loaded.permission === "collab" ? "write" : loaded.permission,
         allowDownload: loaded.allowDownload,
         onDownload: () => {
           void bridge.flush().then(() => {

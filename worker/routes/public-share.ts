@@ -15,15 +15,20 @@ import * as tagsRepo from "../db/repos/tags";
 import * as usersRepo from "../db/repos/users";
 import { shareRenderPayload, signRender } from "../lib/crypto";
 import { r2ThumbKey } from "../lib/keys";
-import { errorResponse, jsonResponse, serveThumb, streamFileResponse } from "../lib/responses";
+import {
+  errorResponse,
+  jsonResponse,
+  serveR2WithCache,
+  streamFileResponse,
+  streamRawFile,
+} from "../lib/responses";
 import { parseJsonOrEmpty } from "../middleware/body";
 import { requireShareToken } from "../middleware/share-token";
 import type { AppEnv } from "../middleware/types";
 import { createFile, putFileBlob } from "../services/file-blob";
 import { trashItems } from "../services/trash";
 import type { FilePreview, FolderRow, ShareRow } from "../types";
-import { normalizeFileKind, rowToFolderMeta, rowToMeta, sharePermissionAllows } from "../types";
-import { forwardCollab, guestIdentity } from "./collab";
+import { normalizeFileKind, rowToFolderMeta, rowToMeta } from "../types";
 
 const r = new Hono<AppEnv>();
 
@@ -66,7 +71,7 @@ r.get(
     const tk = c.get("share");
     const file = await filesRepo.findByIdAnyOwner(c.env, tk.target_id);
     if (!file?.has_thumb) return errorResponse(404, "no thumbnail");
-    return await serveThumb(c.env, r2ThumbKey(file.id));
+    return await serveR2WithCache(c.env, c.executionCtx ?? null, c.req.raw, r2ThumbKey(file.id));
   },
 );
 
@@ -117,42 +122,20 @@ r.post(
   },
 );
 
-// ─── /api/share/:token/collab — realtime collaboration ────────────
-//
-// Only `collab` links may open a WebSocket (`write` = save without
-// realtime). The guest joins the SAME room as the owner
-// (`idFromName(file.id)`), so owner and share visitors see each other.
-// Identity is derived from the token, never from the client or cookies.
-//
-// shortcut: the token is validated at connect time only — revoking or
-// expiring a share does not close sockets that are already open.
-// Upgrade to per-event revalidation inside the DO if immediate
-// revocation matters.
-r.get("/:token/collab", requireShareToken({ target: "file" }), async (c) => {
-  const tk = c.get("share");
-  if (!sharePermissionAllows(tk.permission, "collab")) {
-    return errorResponse(403, "collab requires a collaboration link");
-  }
-  const file = await filesRepo.findByIdAnyOwner(c.env, tk.target_id);
-  if (file?.kind !== "excalidraw") return errorResponse(404, "file not found");
-  return await forwardCollab(c.env, c.req.raw, file.id, guestIdentity(tk.token));
-});
-
-// Folder-share analogue: the file must live inside the shared subtree.
-r.get("/:token/files/:fileId/collab", requireShareToken({ target: "folder" }), async (c) => {
-  const tk = c.get("share");
-  if (!sharePermissionAllows(tk.permission, "collab")) {
-    return errorResponse(403, "collab requires a collaboration link");
-  }
-  const fileId = c.req.param("fileId");
-  if (!fileId) return errorResponse(404, "file not in shared folder");
-  if (!(await foldersRepo.fileInSubtree(c.env, tk.owner, fileId, tk.target_id))) {
-    return errorResponse(404, "file not in shared folder");
-  }
-  const file = await filesRepo.findByIdAnyOwner(c.env, fileId);
-  if (file?.kind !== "excalidraw") return errorResponse(404, "file not found");
-  return await forwardCollab(c.env, c.req.raw, file.id, guestIdentity(tk.token));
-});
+// File-share raw bytes of an uploaded file (kind "file"), inline — the
+// viewer path (image/PDF/video preview). Read-only; `allow_download` only
+// gates the attachment endpoint below. HTML/SVG are CSP-sandboxed.
+r.get(
+  "/:token/raw",
+  requireShareToken({ target: "file", targetMismatchMessage: "not a file share" }),
+  async (c) => {
+    const tk = c.get("share");
+    const file = await filesRepo.findByIdAnyOwner(c.env, tk.target_id);
+    if (!file) return errorResponse(404, "file not found");
+    if (file.kind !== "file") return errorResponse(400, "not an uploaded file");
+    return await streamRawFile(c.env, file, { request: c.req.raw });
+  },
+);
 
 // File-share download (file-share only, allow_download required).
 r.get(
@@ -213,7 +196,12 @@ r.get(
     );
     const out = folders.map((f) =>
       rowToFolderMeta(
-        { ...f, parent_id: f.id === tk.target_id ? null : f.parent_id, starred_at: null },
+        {
+          ...f,
+          parent_id: f.id === tk.target_id ? null : f.parent_id,
+          starred_at: null,
+          pinned_at: null,
+        },
         { tags: folderTags.get(f.id) ?? [] },
       ),
     );
@@ -259,7 +247,20 @@ r.get("/:token/files/:fileId/thumb", requireShareToken(), async (c) => {
   }
   const file = await filesRepo.findByIdAnyOwner(c.env, fileId);
   if (!file?.has_thumb) return errorResponse(404, "no thumbnail");
-  return await serveThumb(c.env, r2ThumbKey(file.id));
+  return await serveR2WithCache(c.env, c.executionCtx ?? null, c.req.raw, r2ThumbKey(file.id));
+});
+
+r.get("/:token/files/:fileId/raw", requireShareToken(), async (c) => {
+  const tk = c.get("share");
+  const fileId = c.req.param("fileId");
+  if (!fileId) return errorResponse(404, "file not in shared folder");
+  if (!(await ensureFolderShareCoversFile(c.env, tk, fileId))) {
+    return errorResponse(404, "file not in shared folder");
+  }
+  const file = await filesRepo.findByIdAnyOwner(c.env, fileId);
+  if (!file) return errorResponse(404, "file not found");
+  if (file.kind !== "file") return errorResponse(400, "not an uploaded file");
+  return await streamRawFile(c.env, file, { request: c.req.raw });
 });
 
 r.get("/:token/files/:fileId/download", requireShareToken(), async (c) => {
@@ -371,7 +372,7 @@ async function renderFolderShareListing(
   const folderOut = folders.map((f) => {
     const parent = f.id === rootId ? null : f.parent_id;
     return rowToFolderMeta(
-      { ...f, parent_id: parent, starred_at: null },
+      { ...f, parent_id: parent, starred_at: null, pinned_at: null },
       {
         tags: folderTags.get(f.id) ?? [],
         fileCount: files.filter((s) => s.folder_id === f.id).length,
@@ -391,7 +392,7 @@ async function renderFolderShareListing(
       expiresAt: tk.expires_at,
     },
     root: rowToFolderMeta(
-      { ...rootRow, parent_id: null, starred_at: null },
+      { ...rootRow, parent_id: null, starred_at: null, pinned_at: null },
       {
         tags: folderTags.get(rootRow.id) ?? [],
         fileCount: files.filter((s) => s.folder_id === rootRow.id).length,

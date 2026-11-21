@@ -58,6 +58,8 @@ export function seedManifestForKind(kind: FileKind, name: string): FileBlob {
       // The canonical seed manifest (with one asset entry) is built
       // by `writeSeedSite`; this sentinel keeps the function pure.
       return emptyManifest();
+    case "file":
+      throw new Error("uploaded files are not seeded");
     default:
       return assertNever(kind);
   }
@@ -103,6 +105,8 @@ export function validateBlobForKind(kind: FileKind, parsed: FileBlob): string | 
       // directly (e.g. round-trip symmetry tests).
       if (!isStaticSiteBlob(parsed)) return "static-site blob shape invalid";
       return validateManifest(parsed as StaticSiteFileBlob);
+    case "file":
+      return "uploaded files are not editable as JSON";
     default:
       return assertNever(kind);
   }
@@ -281,6 +285,7 @@ export async function putFileBlob(env: Env, row: FileRow, req: Request): Promise
     tags,
     version: nextVersion,
     sizeBytes: buf.byteLength,
+    mime: row.mime ?? null,
     hasThumb: row.has_thumb,
     thumbUpdatedAt: row.thumb_updated_at,
     activeShareCount: shareMap.get(row.id) ?? 0,
@@ -345,6 +350,7 @@ export async function createFile(
     folder_id: folderId,
     name: safe,
     kind,
+    mime: null,
     version: 1,
     size_bytes: totalBytes,
     has_thumb: false,
@@ -366,6 +372,7 @@ export async function createFile(
     tags,
     version: 1,
     sizeBytes: totalBytes,
+    mime: null,
     hasThumb: false,
     thumbUpdatedAt: 0,
     activeShareCount: 0,

@@ -1,28 +1,65 @@
-// Formatting helpers shared across the app (relative time, byte sizes).
+// Date / time formatting helpers shared across the app.
 //
 // `relTime` was previously copy-pasted into BrowseView and SharedFolder.
-// `fmtDateTime` was duplicated as `fmt` in ShareDialog.tsx.
+// `fmtDateTime` was duplicated as `fmtDate` in Admin.tsx and `fmt`
+// in ShareDialog.tsx.
 
-/**
- * Human-friendly relative time: "just now", "5m ago", "3h ago", "2d ago",
- * or an absolute date for anything older than ~30 days.
- */
-export function relTime(ms: number): string {
-  const diff = Date.now() - ms;
-  const m = Math.floor(diff / 60_000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d ago`;
-  return new Date(ms).toLocaleDateString();
+const MIN = 60_000;
+const HOUR = 60 * MIN;
+const DAY = 24 * HOUR;
+
+function startOfDay(ms: number): number {
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
 }
 
-/** Locale date + short time, e.g. "11/2/2026 14:32". */
-export function fmtDateTime(ms: number): string {
-  const d = new Date(ms);
-  return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+/** "Mar 4" this year, "Mar 4, 2025" otherwise. */
+export function fmtDate(ms: number, now: number = Date.now()): string {
+  const sameYear = new Date(ms).getFullYear() === new Date(now).getFullYear();
+  return new Date(ms).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
+}
+
+/** Date + short time, e.g. "Mar 4, 2:32 PM". */
+export function fmtDateTime(ms: number, now: number = Date.now()): string {
+  const t = new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return `${fmtDate(ms, now)}, ${t}`;
+}
+
+/**
+ * The single relative-time helper: "just now", "5m ago", "2h ago",
+ * "yesterday", weekday (< 7 days), "Mar 4" (this year), "Mar 4, 2025".
+ */
+export function relTime(ms: number, now: number = Date.now()): string {
+  const diff = Math.max(0, now - ms);
+  if (diff < MIN) return "just now";
+  if (diff < HOUR) return `${Math.floor(diff / MIN)}m ago`;
+  const days = Math.round((startOfDay(now) - startOfDay(ms)) / DAY);
+  if (days <= 0) return `${Math.floor(diff / HOUR)}h ago`;
+  if (days === 1) return "yesterday";
+  if (days < 7) return new Date(ms).toLocaleDateString(undefined, { weekday: "long" });
+  return fmtDate(ms, now);
+}
+
+/**
+ * Truncate a long string by inserting an ellipsis in the middle. Keeps
+ * the head and tail visible — useful for share URLs where the host AND
+ * the trailing token are both useful signals.
+ *
+ *   truncateMiddle("https://example.com/share/abc12345xyz", 28)
+ *     → "https://exam…/share/abc12345xyz" (approximately)
+ */
+export function truncateMiddle(s: string, max = 48): string {
+  if (s.length <= max) return s;
+  // Reserve at least 1 char for the ellipsis; bias slightly toward the
+  // tail so the share token stays visible.
+  const keepEnd = Math.floor((max - 1) / 2) + 2;
+  const keepStart = max - 1 - keepEnd;
+  return `${s.slice(0, keepStart)}…${s.slice(s.length - keepEnd)}`;
 }
 
 /**
@@ -41,16 +78,5 @@ export function expiresPhrase(expiresAt: number | null): string | null {
     return `expires in ${hours}h`;
   }
   if (days <= 7) return `expires in ${days}d`;
-  return `expires ${new Date(expiresAt).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  })}`;
-}
-
-/** Byte size, e.g. "512 B", "1.5 KB", "12.0 MB". */
-export function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  return `expires ${fmtDate(expiresAt, now)}`;
 }

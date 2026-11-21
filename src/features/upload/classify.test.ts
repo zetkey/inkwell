@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyName,
   isJunkPath,
-  MAX_SITE_TOTAL_BYTES,
+  MAX_RAW_FILE_BYTES,
   MAX_UPLOAD_BYTES,
   planEntries,
   sniffMatches,
@@ -74,19 +74,33 @@ describe("planEntries", () => {
     expect(jobs.map((j) => [j.kind, j.name, j.reason ?? null])).toEqual([
       ["excalidraw", "a", null],
       ["notes", "Retro", null],
-      [null, "budget", "Unsupported type (.xlsx)"],
+      ["file", "budget.xlsx", null],
     ]);
   });
 
-  it("rejects files over the size limit", () => {
+  it("stores unknown types as generic files that keep their extension", () => {
+    const jobs = planEntries([entry("photo.PNG"), entry("noext"), entry("deck.pdf")]);
+    expect(jobs.map((j) => [j.kind, j.name, j.reason ?? null])).toEqual([
+      ["file", "photo.PNG", null],
+      ["file", "noext", null],
+      ["file", "deck.pdf", null],
+    ]);
+  });
+
+  it("keeps oversize convertible files as generic files, up to the raw limit", () => {
     const [job] = planEntries([entry("big.md", "x", MAX_UPLOAD_BYTES + 1)]);
-    expect(job.kind).toBe("notes");
-    expect(job.reason).toMatch(/Too large/);
+    expect(job.kind).toBe("file");
+    expect(job.name).toBe("big.md");
+    expect(job.reason).toBeUndefined();
+    const [huge] = planEntries([entry("huge.mov", "x", MAX_RAW_FILE_BYTES + 1)]);
+    expect(huge.kind).toBe("file");
+    expect(huge.reason).toMatch(/Too large/);
   });
 
   it("allows zips up to the site limit", () => {
     const [job] = planEntries([entry("site.zip", "x", MAX_UPLOAD_BYTES + 1)]);
     expect(job.reason).toBeUndefined();
+    expect(job.kind).toBe("static-site");
     expect(job.site).toBe("zip");
   });
 
@@ -95,8 +109,9 @@ describe("planEntries", () => {
     const bad = entry("pkg.json");
     const jobs = planEntries([good, bad], (e) => e.file === good.file);
     expect(jobs[0].kind).toBe("excalidraw");
-    expect(jobs[1].kind).toBeNull();
-    expect(jobs[1].reason).toMatch(/not an Excalidraw/);
+    expect(jobs[1].kind).toBe("file");
+    expect(jobs[1].name).toBe("pkg.json");
+    expect(jobs[1].reason).toBeUndefined();
   });
 
   it("turns a directory with top-level index.html into one site", () => {
@@ -141,34 +156,5 @@ describe("planEntries", () => {
       ["notes", "top", "x"],
       ["static-site", "top", "inner"],
     ]);
-  });
-});
-
-describe("upload limits mirror the worker", () => {
-  it("caps a loose file at the 4 MiB blob limit", () => {
-    const [ok] = planEntries([entry("ok.md", "x", MAX_UPLOAD_BYTES)]);
-    const [big] = planEntries([entry("big.md", "x", MAX_UPLOAD_BYTES + 1)]);
-
-    expect(ok.reason).toBeUndefined();
-    expect(big.reason).toMatch(/Too large .*limit 4\.0 MB/);
-  });
-
-  it("caps a zip upload at the 25 MiB site total", () => {
-    const [ok] = planEntries([entry("site.zip", "x", MAX_SITE_TOTAL_BYTES)]);
-    const [big] = planEntries([entry("site.zip", "x", MAX_SITE_TOTAL_BYTES + 1)]);
-
-    expect(ok.reason).toBeUndefined();
-    expect(big.reason).toMatch(/limit 25\.0 MB/);
-  });
-
-  it("uses the per-asset limit inside a directory site, not the blob limit", () => {
-    const [one] = planEntries([entry("site/index.html", "x", 10 * 1024 * 1024)]);
-    expect(one.reason).toBeUndefined();
-
-    const [tooBig] = planEntries([
-      entry("site/index.html", "x", 24 * 1024 * 1024),
-      entry("site/app.css", "x", 2 * 1024 * 1024),
-    ]);
-    expect(tooBig.reason).toMatch(/Site too large/);
   });
 });

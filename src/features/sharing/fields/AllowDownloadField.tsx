@@ -2,7 +2,7 @@
 // allow downloads — the worker enforces this too — so the switch shows
 // on + disabled for them.
 
-import { Toggle } from "@/features/settings/controls";
+import { Toggle } from "@/components/ui/toggle";
 import type { SharePermission } from "@/lib/api/client";
 
 export function AllowDownloadField({

@@ -34,8 +34,8 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ApiError, type StaticSiteFileBlob, shares, staticSites } from "@/lib/api/client";
 import { errorMessage } from "@/lib/errors";
-import { encodePath } from "@/lib/url";
 import { EditorErrorState, EditorLoadingState } from "./EditorChrome";
+import { encodePath } from "./static-site/sitePaths";
 
 // ─── Owner ────────────────────────────────────────────────────────
 

@@ -26,6 +26,7 @@ function row(overrides: Partial<FileRow> = {}): FileRow {
     kind: "excalidraw",
     version: 3,
     size_bytes: 128,
+    mime: null,
     has_thumb: false,
     thumb_updated_at: 0,
     created_at: 1,

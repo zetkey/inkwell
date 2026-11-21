@@ -11,20 +11,23 @@
 //   .md, .markdown, .txt                               → notes
 //   .zip, a single .html/.htm, or a directory whose top
 //   level contains index.html                          → static-site
-//   anything else                                      → unsupported (listed)
+//   anything else (images, PDF, docx, video, …, and .json /
+//   .xml that are not scenes/diagrams)                 → file (stored as-is,
+//                                                        keeps its extension)
 // Other directories are mirrored as folders; their files are classified
 // with the same rules.
 
-import type { FileKind } from "@/lib/api/client";
+import { type FileKind, MAX_FILE_UPLOAD_BYTES } from "@/lib/api/client";
 import { stripExtension } from "./naming";
 import type { DroppedEntry, PlannedJob, SiteSource } from "./types";
 
-/** Mirrors the worker's `MAX_FILE_BYTES` (blob PUT): 4 MiB. */
-export const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
-/** Mirrors `MAX_SITE_ASSET_BYTES`: one file inside a static site. */
-export const MAX_SITE_ASSET_BYTES = 25 * 1024 * 1024;
+/** Mirrors `MAX_FILE_BYTES` / `MAX_SITE_ASSET_BYTES` in the worker. */
+export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+/** Mirrors the worker's generic-upload cap (`MAX_UPLOAD_BYTES` in
+ *  `services/file-blob.ts`): the limit for files stored as kind `file`. */
+export const MAX_RAW_FILE_BYTES = MAX_FILE_UPLOAD_BYTES;
 /** Mirrors `MAX_SITE_TOTAL_BYTES` (a .zip or a whole directory site). */
-export const MAX_SITE_TOTAL_BYTES = 25 * 1024 * 1024;
+export const MAX_SITE_TOTAL_BYTES = 100 * 1024 * 1024;
 /** Mirrors `MAX_SITE_ASSET_COUNT`. */
 export const MAX_SITE_FILES = 500;
 
@@ -122,35 +125,22 @@ function planSingle(
   const label = entry.file.name;
   const cls = classifyName(label);
   const base: Omit<PlannedJob, "kind" | "name"> = { label, dirPath, entries: [entry] };
-  if (!cls.kind) {
-    const ext = /\.[^./]+$/.exec(label)?.[0];
-    return {
-      ...base,
-      kind: null,
-      name: stripExtension(label),
-      reason: ext ? `Unsupported type (${ext})` : "Unsupported type",
-    };
-  }
+  // Anything we don't convert is stored byte-for-byte as a generic file.
+  const generic = (): PlannedJob => ({
+    ...base,
+    kind: "file",
+    name: label.slice(0, 200),
+    ...(entry.file.size > MAX_RAW_FILE_BYTES
+      ? {
+          reason: `Too large (${formatMb(entry.file.size)}, limit ${formatMb(MAX_RAW_FILE_BYTES)})`,
+        }
+      : {}),
+  });
+  if (!cls.kind) return generic();
+  if (cls.sniff && sniffed(entry) === false) return generic();
   const limit = cls.site === "zip" ? MAX_SITE_TOTAL_BYTES : MAX_UPLOAD_BYTES;
-  if (entry.file.size > limit) {
-    return {
-      ...base,
-      kind: cls.kind,
-      name: stripExtension(label),
-      reason: `Too large (${formatMb(entry.file.size)}, limit ${formatMb(limit)})`,
-    };
-  }
-  if (cls.sniff && sniffed(entry) === false) {
-    return {
-      ...base,
-      kind: null,
-      name: stripExtension(label),
-      reason:
-        cls.sniff === "drawio-xml"
-          ? "Unsupported type (.xml is not a draw.io diagram)"
-          : "Unsupported type (.json is not an Excalidraw scene)",
-    };
-  }
+  // Too big to convert (editors cap at 25 MB): keep the bytes as a file.
+  if (entry.file.size > limit) return generic();
   return {
     ...base,
     kind: cls.kind,
@@ -169,10 +159,10 @@ function planSite(node: DirNode, dirPath: string[]): PlannedJob {
     entries,
     site: "dir",
   };
-  const big = entries.find((e) => e.file.size > MAX_SITE_ASSET_BYTES);
+  const big = entries.find((e) => e.file.size > MAX_UPLOAD_BYTES);
   const total = entries.reduce((n, e) => n + e.file.size, 0);
   if (big) {
-    job.reason = `${big.relativePath} is too large (limit ${formatMb(MAX_SITE_ASSET_BYTES)})`;
+    job.reason = `${big.relativePath} is too large (limit ${formatMb(MAX_UPLOAD_BYTES)})`;
   } else if (total > MAX_SITE_TOTAL_BYTES) {
     job.reason = `Site too large (${formatMb(total)}, limit ${formatMb(MAX_SITE_TOTAL_BYTES)})`;
   } else if (entries.length > MAX_SITE_FILES) {
@@ -225,7 +215,11 @@ export async function classifyEntries(entries: DroppedEntry[]): Promise<PlannedJ
   await Promise.all(
     entries.map(async (e) => {
       const cls = classifyName(e.file.name);
-      if (!cls.sniff || e.file.size > MAX_UPLOAD_BYTES) return;
+      if (!cls.sniff) return;
+      if (e.file.size > MAX_UPLOAD_BYTES) {
+        results.set(e, false); // too big to be a scene/diagram → plain file
+        return;
+      }
       try {
         results.set(e, sniffMatches(cls.sniff, await e.file.text()));
       } catch {

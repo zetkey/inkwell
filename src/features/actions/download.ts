@@ -11,6 +11,7 @@ const EXT: Record<FileKind, string> = {
   drawio: ".drawio",
   notes: ".md",
   "static-site": ".zip",
+  file: "",
 };
 
 export function triggerUrlDownload(url: string, filename?: string): void {

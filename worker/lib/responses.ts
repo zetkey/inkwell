@@ -219,9 +219,61 @@ function downloadExtensionForKind(kind: FileKind): "excalidraw" | "drawio" | "zi
     case "static-site":
       // Re-packaged ZIP — see `streamFileResponse` for the build.
       return "zip";
+    case "file":
+      throw new Error("raw files are served via streamRawFile");
     default:
       return assertNever(kind);
   }
+}
+
+export async function serveR2WithCache(
+  env: { R2: R2Bucket },
+  ctx: { waitUntil(promise: Promise<unknown>): void } | null,
+  req: Request,
+  key: string,
+): Promise<Response> {
+  const cache = (globalThis as { caches?: { default: Cache } }).caches?.default;
+  if (cache) {
+    const cached = await cache.match(req);
+    if (cached) return cached;
+  }
+  const obj = await env.R2.get(key);
+  if (!obj) return errorResponse(404, "not found");
+  const contentType = obj.httpMetadata?.contentType ?? "application/octet-stream";
+  const res = new Response(obj.body, {
+    headers: {
+      "content-type": contentType,
+      etag: obj.httpEtag,
+      "cache-control": "public, max-age=31536000, immutable",
+    },
+  });
+  if (cache && ctx) ctx.waitUntil(cache.put(req, res.clone()));
+  return res;
+}
+
+export async function streamRawFile(
+  env: { R2: R2Bucket },
+  row: FileRow,
+  opts: { request: Request },
+): Promise<Response> {
+  const obj = await env.R2.get(r2FileKey(row.id));
+  if (!obj) return errorResponse(404, "file blob missing in R2");
+  const mime = safeMime(row.mime);
+  const headers: Record<string, string> = {
+    "content-type": mime,
+    "x-content-type-options": "nosniff",
+    "cache-control": "no-store",
+    etag: `"${row.version}"`,
+  };
+  if (isActiveMime(mime)) {
+    headers["content-security-policy"] = "sandbox";
+  }
+  const req = opts.request;
+  const range = req.headers.get("range");
+  if (range) {
+    // Minimal: ignore range, serve full.
+  }
+  return new Response(obj.body, { headers });
 }
 
 export async function parseStoredFileBlob(obj: R2ObjectBody): Promise<FileBlob | null> {
@@ -230,4 +282,30 @@ export async function parseStoredFileBlob(obj: R2ObjectBody): Promise<FileBlob |
   } catch {
     return null;
   }
+}
+
+// ─── Mime helpers (uploaded files) ──────────────────────────────────
+/** Normalize an untrusted Content-Type into a safe, parameter-free
+ *  `type/subtype`. Returns `application/octet-stream` for anything
+ *  malformed or unrecognized. */
+export function safeMime(input: string | null | undefined): string {
+  if (!input) return "application/octet-stream";
+  const raw = input.split(";")[0].trim().toLowerCase();
+  if (!/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(raw)) {
+    return "application/octet-stream";
+  }
+  return raw;
+}
+
+/** Whether a mime can execute in a browser (HTML/SVG/XML). Used to
+ *  decide whether to sandbox the response. */
+export function isActiveMime(mime: string): boolean {
+  const m = mime.toLowerCase();
+  return (
+    m === "text/html" ||
+    m === "image/svg+xml" ||
+    m === "application/xhtml+xml" ||
+    m === "text/xml" ||
+    m === "application/xml"
+  );
 }

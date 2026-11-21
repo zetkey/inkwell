@@ -47,6 +47,7 @@ function metaOf(id: string, version: number): FileMeta {
     tags: [],
     version,
     sizeBytes: 1,
+    mime: null,
     hasThumb: false,
     thumbUpdatedAt: 0,
     activeShareCount: 0,

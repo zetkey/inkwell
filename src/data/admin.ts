@@ -66,3 +66,13 @@ export function useCreateInvite() {
     },
   });
 }
+
+export function useRevokeInvite() {
+  const qc = useQueryClient();
+  return useMutation<{ ok: true }, ApiError, string>({
+    mutationFn: (token) => admin.revokeInvite(token),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.admin.invites() });
+    },
+  });
+}

@@ -51,6 +51,7 @@ function row(overrides: Partial<FileRow> = {}): FileRow {
     kind: "static-site",
     version: 4,
     size_bytes: 6,
+    mime: null,
     has_thumb: false,
     thumb_updated_at: 0,
     created_at: 1,
