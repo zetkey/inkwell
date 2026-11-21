@@ -48,6 +48,11 @@ const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 10_000;
 const DELTA_THROTTLE_MS = 100;
 const CURSOR_THROTTLE_MS = 50;
+// The room drops clients over ~40 messages/s. Batches drain one per tick,
+// paced well under that so a queue of them cannot compete with cursors.
+const SNAPSHOT_BATCH_GAP_MS = 50;
+// A frame the server refused is retried once the room has calmed down.
+const REJECTED_FRAME_RETRY_MS = 250;
 
 // Excalidraw's own collab palette; a peer's color only has to be stable
 // and distinct, so a name hash is enough.
@@ -189,7 +194,7 @@ export function useCollab({
     if (!delivered) return false;
     snapshotQueueRef.current.shift();
     if (snapshotQueueRef.current.length > 0) {
-      snapshotTimerRef.current = window.setTimeout(drainSnapshotQueue, 0);
+      snapshotTimerRef.current = window.setTimeout(drainSnapshotQueue, SNAPSHOT_BATCH_GAP_MS);
       return true;
     }
     // The room now has the whole scene: later deltas can be incremental.
@@ -232,9 +237,23 @@ export function useCollab({
     // shortcut: the `order` list is not measured; it is ids only and the
     // 3 MiB budget leaves 1 MiB of headroom under the room's 4 MiB cap.
     const plan = planDelta(changed, pendingFiles);
-    // One paste can be bigger than a frame on its own: send nothing and keep
-    // the pending scene, so the next, smaller change ships the diff.
-    if (plan.skip) return;
+    if (plan.skip) {
+      // The change (or a reconnect scene) cannot fit one frame. Going quiet
+      // would leave the baseline stale, so every later change would compute
+      // the same oversized diff and be skipped forever. Ship it as batches
+      // instead; the baseline advances when the queue drains.
+      const batches = batchElements(changed);
+      if (batches.length === 0) return;
+      snapshotQueueRef.current = batches.map((batch, index) =>
+        index === 0 ? { elements: batch, order } : { elements: batch },
+      );
+      // `changed` is derived from `pending.elements`, so the queue covers
+      // the whole pending scene.
+      snapshotSceneRef.current = { elements: [...pending.elements], order };
+      pendingSceneRef.current = null;
+      drainSnapshotQueue();
+      return;
+    }
     const files = plan.files;
 
     if (changed.length === 0 && !sendOrder && Object.keys(files).length === 0) {
@@ -335,13 +354,20 @@ export function useCollab({
       }
       applyingRef.current = true;
       try {
+        const baseline = knownRef.current;
+        const localBefore = api.getSceneElementsIncludingDeleted();
+        // Elements the room has never received (a skipped delta, an offline
+        // edit): merging a peer's frame must not make them look delivered.
+        const neverSent = localBefore.filter((element) => !baseline.has(element.id));
         const merged = mergeRemoteElements(
-          api.getSceneElementsIncludingDeleted(),
+          localBefore,
           message.elements,
           api.getAppState(),
           message.order,
         );
-        knownRef.current = stampElements(merged);
+        const stamps = stampElements(merged);
+        for (const element of neverSent) stamps.delete(element.id);
+        knownRef.current = stamps;
         lastOrderRef.current = orderOf(merged);
         api.updateScene({ elements: merged, captureUpdate: CaptureUpdateAction.NEVER });
         if (message.files) {
@@ -405,12 +431,30 @@ export function useCollab({
         case "elements":
           applyRemote(message);
           break;
-        case "error":
+        case "error": {
+          // Rate limit / oversized frame: the server refuses after `send()`
+          // already succeeded, so anything stamped from that frame is gone.
+          // Drop the baseline and re-send the scene through the batch path.
+          if (message.message === "too many messages" || message.message === "frame too large") {
+            knownRef.current = new Map();
+            lastOrderRef.current = [];
+            const api = apiRef.current;
+            if (api) {
+              pendingSceneRef.current = {
+                elements: api.getSceneElementsIncludingDeleted(),
+                files: api.getFiles(),
+              };
+              if (deltaTimerRef.current !== null) window.clearTimeout(deltaTimerRef.current);
+              deltaTimerRef.current = window.setTimeout(flushDelta, REJECTED_FRAME_RETRY_MS);
+            }
+            return;
+          }
           console.error(`collab: ${message.message}`);
           break;
+        }
       }
     },
-    [applyRemote, pushCollaborators, sendFullSnapshot],
+    [apiRef, applyRemote, flushDelta, pushCollaborators, sendFullSnapshot],
   );
 
   const notifySceneChange = useCallback(

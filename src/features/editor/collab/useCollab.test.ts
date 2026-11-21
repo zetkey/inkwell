@@ -12,7 +12,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@excalidraw/excalidraw", () => ({
   CaptureUpdateAction: { NEVER: "never" },
   UserIdleState: { ACTIVE: "active", AWAY: "away" },
-  reconcileElements: () => [],
+  // Minimal stand-in for the real reconcile: union by id, newest version wins.
+  reconcileElements: (
+    local: Array<{ id: string; version: number }>,
+    remote: Array<{ id: string; version: number }>,
+  ) => {
+    const byId = new Map(local.map((element) => [element.id, element]));
+    for (const element of remote) {
+      const previous = byId.get(element.id);
+      if (!previous || element.version >= previous.version) byId.set(element.id, element);
+    }
+    return [...byId.values()];
+  },
 }));
 vi.mock("@/data/auth", () => ({ useMe: () => ({ data: null }) }));
 
@@ -233,6 +244,120 @@ describe("useCollab delta baseline", () => {
       await vi.advanceTimersByTimeAsync(100);
     });
     expect(frames()).toHaveLength(2);
+  });
+
+  it("ships an oversized delta as batches instead of stalling", async () => {
+    const big = (id: string): Element => ({ id, version: 1, text: "x".repeat(900_000) });
+    // Bigger than one frame, so the delta has to go out as batches.
+    const scene = [big("b1"), big("b2"), big("b3"), big("b4")];
+    await mount([]);
+    await open(socket);
+
+    await act(async () => {
+      notify?.(scene, {});
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    // First batch is out; the rest are queued, so the baseline has not moved.
+    expect(frames()).toHaveLength(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(frames()).toHaveLength(2);
+
+    // Everything is sent now: the same scene produces no further frames.
+    await act(async () => {
+      notify?.(scene, {});
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(frames()).toHaveLength(2);
+  });
+
+  it("re-sends a local element a peer frame did not carry", async () => {
+    const scene: Element[] = [];
+    await mount(scene);
+    await open(socket);
+
+    // A local edit the room has not seen (no flush happened).
+    scene.push({ id: "local", version: 1 });
+
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({ t: "elements", elements: [{ id: "remote", version: 1 }] }),
+      });
+    });
+
+    // The merge must not make the local element look delivered.
+    await act(async () => {
+      notify?.([...scene], {});
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    const sent = frames();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].elements?.map((element) => element.id)).toEqual(["local"]);
+  });
+
+  it("re-sends the scene when the server rejects a frame", async () => {
+    const el: Element = { id: "e1", version: 1 };
+    const scene: Element[] = [];
+    await mount(scene);
+    await open(socket);
+
+    scene.push(el);
+    await change([el]);
+    expect(frames()).toHaveLength(1);
+
+    // The room refused something we already counted as sent.
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ t: "error", message: "too many messages" }) });
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+
+    const sent = frames();
+    expect(sent).toHaveLength(2);
+    expect(sent[1].elements).toEqual([el]);
+  });
+
+  it("paces snapshot batches instead of bursting them", async () => {
+    const big = (id: string): Element => ({ id, version: 1, text: "x".repeat(900_000) });
+    // 10 elements -> four 3 MiB batches, sent one per tick.
+    const scene = Array.from({ length: 10 }, (_, index) => big(`b${index}`));
+    await mount(scene);
+    await open(socket);
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          t: "joined",
+          self: { peerId: "me", id: "u1", name: "Me", color: "#000000" },
+          peers: [],
+        }),
+      });
+    });
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          t: "presence",
+          peers: [
+            { peerId: "me", id: "u1", name: "Me", color: "#000000" },
+            { peerId: "p1", id: "u2", name: "Peer", color: "#111111" },
+          ],
+        }),
+      });
+    });
+
+    expect(frames()).toHaveLength(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60);
+    });
+    // One batch every 50 ms, not the whole queue at once.
+    expect(frames()).toHaveLength(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(frames()).toHaveLength(4);
   });
 
   it("re-sends the same change when the socket refuses the frame", async () => {
