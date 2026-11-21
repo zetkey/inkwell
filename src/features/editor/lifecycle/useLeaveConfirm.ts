@@ -1,13 +1,18 @@
 // In-app navigation guard: surfaces a Stay / Discard / Save & Leave
-// dialog when the user clicks the editor's "back" button while the
-// save lifecycle is dirty.
+// dialog when the user tries to leave the editor while the save
+// lifecycle is dirty.
 //
 // `<BrowserRouter>` (rather than the data router) means `useBlocker`
-// isn't available, so we wrap the only in-app exit point — the back
-// button — and let the dialog drive the continuation. Tab close /
-// hard reload still use the native `beforeunload` prompt.
+// isn't available, so we cover both in-app exits:
+//   • the back button / ⌘K route, which call `requestLeave(cont)` with
+//     their own continuation;
+//   • browser Back, which we catch on `popstate`: the browser has
+//     already moved, so we push the editor entry back (URL + router
+//     state) and let the dialog decide. The queued continuation then
+//     performs the navigation the user asked for.
+// Tab close / hard reload still use the native `beforeunload` prompt.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export type LeaveBusyState = false | "save";
 
@@ -41,23 +46,25 @@ export function useLeaveConfirm(opts: UseLeaveConfirmOptions): UseLeaveConfirmRe
   const [busy, setBusy] = useState<LeaveBusyState>(false);
   const pendingRef = useRef<(() => void) | null>(null);
 
-  const requestLeave = useCallback(
-    (cont: () => void) => {
-      if (!isDirty) {
-        cont();
-        return;
-      }
-      pendingRef.current = cont;
-      setOpen(true);
-    },
-    [isDirty],
-  );
+  const dirtyRef = useRef(isDirty);
+  dirtyRef.current = isDirty;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+
+  const requestLeave = useCallback((cont: () => void) => {
+    if (!dirtyRef.current) {
+      cont();
+      return;
+    }
+    pendingRef.current = cont;
+    setOpen(true);
+  }, []);
 
   const cancel = useCallback(() => {
-    if (busy) return;
+    if (busyRef.current) return;
     pendingRef.current = null;
     setOpen(false);
-  }, [busy]);
+  }, []);
 
   const onOpenChange = useCallback(
     (next: boolean) => {
@@ -90,6 +97,52 @@ export function useLeaveConfirm(opts: UseLeaveConfirmOptions): UseLeaveConfirmRe
     pendingRef.current = null;
     cont?.();
   }, [saveNow]);
+
+  // ─── Browser Back guard ────────────────────────────────────────────
+  // The editor entry's URL + history state, captured while we're on it
+  // (after a popstate `window.location` is already the destination).
+  const hereRef = useRef<{ url: string; state: unknown } | null>(null);
+  // Destination we asked `history.back()` to reach; the popstate it
+  // causes must not open the dialog a second time.
+  const expectedDestRef = useRef<string | null>(null);
+  const lastUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const url = window.location.pathname + window.location.search + window.location.hash;
+    // Only a real location change drops an expected destination: the
+    // dialog closing re-renders while the continuation's popstate is
+    // still on its way, and clearing it there would re-arm the guard.
+    if (lastUrlRef.current !== url) {
+      lastUrlRef.current = url;
+      expectedDestRef.current = null;
+    }
+    hereRef.current = { url, state: window.history.state };
+  });
+
+  useEffect(() => {
+    const onPopState = () => {
+      const here = hereRef.current;
+      if (!here || !dirtyRef.current || busyRef.current) return;
+      const dest = window.location.pathname + window.location.search + window.location.hash;
+      if (dest === here.url) return;
+      if (expectedDestRef.current === dest) {
+        // This is the navigation the dialog's continuation asked for.
+        expectedDestRef.current = null;
+        return;
+      }
+      // Put the editor entry back (the router reads `window.location`
+      // live, so this keeps it on the editor) and let the dialog drive
+      // the real navigation afterwards. Idempotent: a second Back
+      // restores the same two entries.
+      window.history.pushState(here.state, "", here.url);
+      requestLeave(() => {
+        expectedDestRef.current = dest;
+        window.history.back();
+      });
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [requestLeave]);
 
   return { open, busy, requestLeave, onOpenChange, cancel, discard, saveAndLeave };
 }

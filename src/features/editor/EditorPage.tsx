@@ -77,6 +77,16 @@ export function EditorPage() {
   const [loaded, setLoaded] = useState<LoadedFile | null>(null);
   const loadedRef = useRef(loaded);
   loadedRef.current = loaded;
+  // A save's PUT can resolve after the user moved to another file (the
+  // editor routes reuse this component). Writes stop once the page is
+  // gone so a late save can't land in the wrong working copy.
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
   // Set when the save lifecycle hit a 409 and re-fetched: shows the
   // non-blocking conflict banner in the header.
   const [conflict, setConflict] = useState(false);
@@ -159,6 +169,15 @@ export function EditorPage() {
 
   const starred = starOverride?.id === id ? starOverride.starred : loaded?.meta.starredAt != null;
 
+  // A 409 reload swaps the scene under a live Excalidraw canvas, which
+  // only reads `initialData` on mount (drawio/markdown re-seed from
+  // `loaded` instead). Remount so the canvas — and the collab hook's
+  // baseline — match the fresh server version.
+  const remountAfterConflict = useCallback((ls: LoadedFile) => {
+    setLoaded(ls);
+    setEditorKey((k) => k + 1);
+  }, []);
+
   // Reload after a 409 conflict: bypass cache and force a fresh fetch.
   // Only the save lifecycle's conflict path calls this.
   const reload = useCallback(async () => {
@@ -180,6 +199,14 @@ export function EditorPage() {
     async (version: number, blob: FileBlob) => {
       const m = await files.save(id, version, blob);
       const prev = loadedRef.current;
+      // The PUT succeeded, but the working copy may already belong to a
+      // different file (or the page unmounted). Writing this scene into
+      // it would corrupt what's on screen; invalidate instead so a
+      // revisit refetches the saved version.
+      if (!aliveRef.current || !prev || prev.meta.id !== id) {
+        qc.invalidateQueries({ queryKey: keys.files.detail(id), exact: true });
+        return { version: m.version };
+      }
       const nextLoaded: LoadedFile = {
         meta: {
           id,
@@ -187,12 +214,12 @@ export function EditorPage() {
           kind: m.kind,
           version: m.version,
           updatedAt: m.updatedAt,
-          folderId: prev?.meta.folderId ?? null,
+          folderId: prev.meta.folderId,
           // Once we've saved at least once, the editor's thumb pipeline
           // will have shipped (or is about to ship) a thumb. Server
           // `loadRow` is the source of truth on next cold load.
-          hasThumb: prev?.meta.hasThumb ?? false,
-          starredAt: prev?.meta.starredAt ?? m.starredAt ?? null,
+          hasThumb: prev.meta.hasThumb,
+          starredAt: prev.meta.starredAt ?? m.starredAt ?? null,
         },
         blob,
         permission: "write",
@@ -200,7 +227,7 @@ export function EditorPage() {
         sharedBy: null,
         shareExpiresAt: null,
       };
-      setLoaded(nextLoaded);
+      setLoaded((cur) => (cur && cur.meta.id === id ? nextLoaded : cur));
       qc.setQueryData(keys.files.detail(id), nextLoaded);
       // Update cached file-list rows so explorer views show fresh data.
       // Scope to list queries only — invalidating `keys.files.all` would
@@ -471,6 +498,7 @@ export function EditorPage() {
         <ExcalidrawEditor
           key={editorKey}
           {...common}
+          onReload={remountAfterConflict}
           chrome={<ExcalidrawMenu variant="owner" theme={themeMode} onSelectTheme={setThemeMode} />}
         />
         {overlays}

@@ -70,6 +70,12 @@ export interface ExcalidrawEditorProps {
    * editor (defaults to `/api/files/:id/collab`).
    */
   collabPath?: string;
+  /**
+   * Whether to open the realtime socket. Defaults to true (owner
+   * editor). Share editors pass `false` for `write` links: they are
+   * editable but have no collab route, so a socket would 401 forever.
+   */
+  collabEnabled?: boolean;
 }
 
 export default function ExcalidrawEditor({
@@ -82,6 +88,7 @@ export default function ExcalidrawEditor({
   chrome,
   renderHeader,
   collabPath,
+  collabEnabled = true,
 }: ExcalidrawEditorProps) {
   // Excalidraw invokes this callback synchronously from its class constructor.
   // Keeping the API in state would update this parent while its child is still
@@ -107,14 +114,20 @@ export default function ExcalidrawEditor({
   // hook reads this through `getLatest()` whenever it needs to
   // serialise a save.
   const latestSnapshotRef = useRef<ExcalidrawSnapshot | null>(initialSnapshot);
+  // The blob produced by our own last save. The parent stores that same
+  // object in `loaded.blob`; re-seeding Excalidraw from it would rewind
+  // the canvas (and drop the debounce) while the user keeps typing.
+  const ownBlobRef = useRef<FileBlob | null>(null);
   const readOnly = loaded.permission === "read";
 
   // Realtime collab follows the editor's write permission; share editors
-  // reach their own endpoint through `collabPath`. The hook touches only the
-  // live Excalidraw API; save/lifecycle stay untouched.
+  // reach their own endpoint through `collabPath`. `collabEnabled` keeps
+  // `write` share links (editable, but no collab route) off the socket.
+  // The hook touches only the live Excalidraw API; save/lifecycle stay
+  // untouched.
   const collab = useCollab({
     fileId: loaded.meta.id,
-    enabled: !readOnly,
+    enabled: !readOnly && collabEnabled,
     apiRef,
     collabPath,
   });
@@ -143,6 +156,7 @@ export default function ExcalidrawEditor({
       };
     },
     onSaved: (saved) => {
+      ownBlobRef.current = saved.blob;
       // Schedule a thumb export after every successful save. The
       // pipeline's internal fingerprint dedup short-circuits a
       // duplicate upload when the saved content matches the last
@@ -168,8 +182,11 @@ export default function ExcalidrawEditor({
   // onChange would compare against a stale baseline and force a
   // redundant save, and so on. The blob reference is stable across
   // save-version bumps and only changes when a fresh `LoadedFile` is
-  // set (initial mount, scene navigation, post-409 reload).
+  // set (initial mount, scene navigation, post-409 reload). Our own
+  // save also swaps the blob; that one is skipped so it can't rewind
+  // the live canvas.
   useEffect(() => {
+    if (loaded.blob === ownBlobRef.current) return;
     const blob = loaded.blob as ExcalidrawFileBlob;
     const nextSnapshot = makeExcalidrawSnapshot(
       (blob.elements as ExcalidrawElement[]) || [],

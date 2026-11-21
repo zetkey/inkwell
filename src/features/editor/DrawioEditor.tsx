@@ -28,7 +28,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
-import type { DrawioFileBlob, LoadedFile } from "@/lib/api/client";
+import type { DrawioFileBlob, FileBlob, LoadedFile } from "@/lib/api/client";
 import { useDrawioStyle } from "@/lib/preferences";
 import { type ResolvedTheme, useTheme } from "@/lib/theme";
 import { DrawioSidebarToggles } from "./DrawioSidebarToggles";
@@ -324,6 +324,10 @@ export default function DrawioEditor({
   // editing while the export was in flight) are filtered against this.
   const pendingThumbXmlRef = useRef<string | null>(null);
   const previousFileIdRef = useRef(loaded.meta.id);
+  // Blob produced by our own last save (the parent stores that same
+  // object in `loaded.blob`); re-loading it into the iframe would rewind
+  // the canvas to the snapshot and drop edits made since.
+  const ownBlobRef = useRef<FileBlob | null>(null);
 
   const [ready, setReady] = useState(false);
   const [slots, setSlots] = useState<DrawioMenubarSlots | null>(null);
@@ -396,7 +400,8 @@ export default function DrawioEditor({
       if (!xml) return null;
       return { fp: hashXml(xml), blob: { kind: "drawio", xml } };
     },
-    onSaved: () => {
+    onSaved: (saved) => {
+      ownBlobRef.current = saved.blob;
       // Schedule a thumb export after every successful save. The
       // export reply comes back asynchronously via the iframe's
       // `message` event; `requestThumbExport` self-dedups on
@@ -424,6 +429,7 @@ export default function DrawioEditor({
   useEffect(() => {
     const fileChanged = previousFileIdRef.current !== loaded.meta.id;
     previousFileIdRef.current = loaded.meta.id;
+    if (!fileChanged && loaded.blob === ownBlobRef.current) return;
     latestXmlRef.current = initialXml;
     if (fileChanged) {
       // Different file → the previous file's thumb fingerprint is
@@ -440,7 +446,7 @@ export default function DrawioEditor({
     lifecycle.reset(loaded.meta.version, hashXml(initialXml));
     // `lifecycle.reset` is stable across renders (useCallback'd
     // against stable refs), so depending on it is harmless.
-  }, [initialXml, loaded.meta.id, loaded.meta.version, lifecycle.reset]);
+  }, [initialXml, loaded.blob, loaded.meta.id, loaded.meta.version, lifecycle.reset]);
 
   useEffect(() => {
     function onMessage(event: MessageEvent) {

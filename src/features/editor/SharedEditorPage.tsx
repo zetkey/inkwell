@@ -19,6 +19,7 @@ import { shares } from "@/lib/api/client";
 import { keys } from "@/lib/api/query-keys";
 import { errorMessage } from "@/lib/errors";
 import { useTheme } from "@/lib/theme";
+import { shouldOpenCollab } from "./collab/gating";
 import { collabPathForShare } from "./collab/paths";
 import { EditorErrorState, EditorLoadingState } from "./EditorChrome";
 import { EditorHeader } from "./EditorHeader";
@@ -61,6 +62,16 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
     if (fileQuery.data) setLoaded(fileQuery.data);
   }, [fileQuery.data, loaded]);
 
+  // A save can resolve after the visitor moved to another shared file;
+  // stop writing once this page is gone.
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+
   // Force-fresh reload after a 409 conflict.
   const reload = useCallback(async () => {
     const ls = await qc.fetchQuery({
@@ -77,33 +88,47 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
   loadedRef.current = loaded;
   const save = useCallback(
     async (version: number, blob: FileBlob) => {
+      const savingId = loadedRef.current?.meta.id ?? null;
       const m = fileId
         ? await shares.saveFolderFile(token, fileId, version, blob)
         : await shares.save(token, version, blob);
       const prev = loadedRef.current;
+      // The PUT succeeded, but the visitor may already be on another
+      // shared file (or gone). Don't write this scene into it.
+      if (!aliveRef.current || !savingId || prev?.meta.id !== savingId) {
+        qc.invalidateQueries({ queryKey: keys.publicShare.token(token, fileId), exact: true });
+        return { version: m.version };
+      }
       const nextLoaded: LoadedFile = {
         meta: {
-          id: prev?.meta.id ?? fileId ?? "",
+          id: savingId,
           name: m.name,
           kind: m.kind,
           version: m.version,
           updatedAt: m.updatedAt,
-          folderId: prev?.meta.folderId ?? null,
-          hasThumb: prev?.meta.hasThumb ?? false,
-          starredAt: prev?.meta.starredAt ?? m.starredAt ?? null,
+          folderId: prev.meta.folderId,
+          hasThumb: prev.meta.hasThumb,
+          starredAt: prev.meta.starredAt ?? m.starredAt ?? null,
         },
         blob,
-        permission: prev?.permission ?? "write",
-        allowDownload: prev?.allowDownload ?? true,
-        sharedBy: prev?.sharedBy ?? null,
-        shareExpiresAt: prev?.shareExpiresAt ?? null,
+        permission: prev.permission,
+        allowDownload: prev.allowDownload,
+        sharedBy: prev.sharedBy,
+        shareExpiresAt: prev.shareExpiresAt,
       };
-      setLoaded(nextLoaded);
+      setLoaded((cur) => (cur && cur.meta.id === savingId ? nextLoaded : cur));
       qc.setQueryData(keys.publicShare.token(token, fileId), nextLoaded);
       return { version: m.version };
     },
     [qc, token, fileId],
   );
+
+  // Excalidraw only reads `initialData` on mount; remount after a 409
+  // reload so the canvas and the collab baseline match the fresh scene.
+  const remountAfterConflict = useCallback((ls: LoadedFile) => {
+    setLoaded(ls);
+    setEditorKey((k) => k + 1);
+  }, []);
 
   if (fileQuery.isError) {
     return (
@@ -215,6 +240,8 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
         <ExcalidrawEditor
           key={editorKey}
           {...common}
+          onReload={remountAfterConflict}
+          collabEnabled={shouldOpenCollab(loaded.permission)}
           collabPath={collabPath}
           chrome={
             <ExcalidrawMenu variant="shared" theme={themeMode} onSelectTheme={setThemeMode} />

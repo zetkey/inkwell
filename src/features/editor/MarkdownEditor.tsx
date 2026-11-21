@@ -55,6 +55,10 @@ export default function MarkdownEditor({
   const selectedFont = fontStack(font);
   const initialFingerprint = fingerprintMarkdown(canonical ?? "");
   const latestRef = useRef({ source: canonical ?? "", fp: initialFingerprint });
+  // Blob produced by our own last save. The parent stores that object in
+  // `loaded.blob`; re-seeding from it would rewind CodeMirror while the
+  // user keeps typing.
+  const ownBlobRef = useRef<FileBlob | null>(null);
   const thumb = useThumbPipeline({ saveThumb, onThumbSaved, readOnly });
 
   const lifecycle = useSaveLifecycle<FileBlob, LoadedFile>({
@@ -74,6 +78,7 @@ export default function MarkdownEditor({
       };
     },
     onSaved: (saved) => {
+      ownBlobRef.current = saved.blob;
       const persisted = saved.blob as MarkdownNotesFileBlob;
       thumb.request(saved.fp, async () => markdownToThumbSvg(persisted.source));
     },
@@ -88,6 +93,7 @@ export default function MarkdownEditor({
   loadedVersionRef.current = loaded.meta.version;
 
   useEffect(() => {
+    if (loaded.blob === ownBlobRef.current) return;
     let cancelled = false;
     setLoadError(null);
     const currentBlob = loaded.blob as NotesFileBlob;
@@ -111,8 +117,8 @@ export default function MarkdownEditor({
     return () => {
       cancelled = true;
     };
-    // Version bumps after every save while the blob reference stays stable;
-    // re-running then would overwrite unsaved CodeMirror state.
+    // Our own save swaps the blob reference too; that case is skipped
+    // above so it can't overwrite unsaved CodeMirror state.
   }, [loaded.blob]);
 
   useEffect(() => {

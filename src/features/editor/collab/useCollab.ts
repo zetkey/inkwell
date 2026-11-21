@@ -24,6 +24,7 @@ import type {
 import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMe } from "@/data/auth";
 import { userDisplayName } from "@/lib/user";
+import { shouldRetryConnect } from "./gating";
 import {
   changedElements,
   mergeRemoteElements,
@@ -359,11 +360,17 @@ export function useCollab({
     if (!enabled || !fileId || typeof WebSocket === "undefined") return;
     let disposed = false;
     let attempt = 0;
+    // Connects that closed without ever opening (auth rejections look
+    // exactly like this); a socket that opened once always retries.
+    let failures = 0;
+    let everOpened = false;
     let retryTimer: number | null = null;
     let socket: WebSocket | null = null;
 
     const scheduleReconnect = () => {
       if (disposed) return;
+      failures += 1;
+      if (!shouldRetryConnect(failures, everOpened)) return;
       const delay = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
       attempt += 1;
       retryTimer = window.setTimeout(connect, delay);
@@ -382,6 +389,8 @@ export function useCollab({
           return;
         }
         attempt = 0;
+        failures = 0;
+        everOpened = true;
         setConnected(true);
         send({ t: "join", name, color });
         // Edits made while offline kept their pending snapshot; ship it now.

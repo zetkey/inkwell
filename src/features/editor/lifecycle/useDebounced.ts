@@ -1,11 +1,11 @@
 // Lifecycle-internal debounce.
 //
-// Originally lived in `src/hooks/useDebounced.ts` as a "general
-// utility", but the editor save lifecycle is the only consumer. Moved
-// here so the hook stays close to its single use site and the
-// shared-lifecycle surface is self-contained.
+// Lived in `src/hooks/useDebounced.ts` as a "general utility" until the
+// save lifecycle stopped needing it; the editor's thumbnail-export
+// pipeline (`DrawioEditor`) is now the only consumer. Kept here so the
+// shared-lifecycle surface stays self-contained.
 
-import { useEffect, useMemo, useRef } from "react";
+import { useMemo, useRef } from "react";
 
 /**
  * Returns a stable function that invokes `fn` with the latest arguments
@@ -29,12 +29,11 @@ export function useDebounced<A extends unknown[]>(
         clearTimeout(timer.current);
         timer.current = null;
       }
-      // Drop any pending args so a later `flush()` (e.g. the
-      // unmount cleanup in `useSaveLifecycle`, or a subsequent
-      // `beforeunload`) can't resurrect a call the caller has
-      // explicitly cancelled. Without this, clicking "Discard" in
-      // the leave dialog still persists the discarded edits via
-      // the unmount flush.
+      // Drop any pending args so a later `flush()` (a subsequent
+      // `beforeunload`, or the caller's own unmount flush) can't
+      // resurrect a call the caller has explicitly cancelled. Without
+      // this, clicking "Discard" in the leave dialog still persists
+      // the discarded edits.
       lastArgs.current = null;
     };
     const flush = () => {
@@ -61,8 +60,11 @@ export function useDebounced<A extends unknown[]>(
     return Object.assign(debounced, { flush, cancel });
   }, [delay]);
 
-  // Cancel on unmount so we don't fire stale saves.
-  useEffect(() => () => wrapped.cancel(), [wrapped]);
+  // No cancel-on-unmount: a later `flush()` (the caller's unmount
+  // cleanup, or a beforeunload) must still be able to run the pending
+  // call — that is what saves edits when the user navigates away
+  // outside the leave dialog. Callers that mean to drop the work call
+  // `cancel()` explicitly (e.g. "Discard").
 
   return wrapped;
 }
