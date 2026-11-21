@@ -24,9 +24,21 @@
  *  which is a memory ceiling, not a CPU budget. */
 export const MAX_FRAME_CHARS = 4 * 1024 * 1024;
 
-/** Sockets a single room accepts. Each one costs memory and fan-out work
- *  per relayed frame; 24 is far above a real editing session. */
+/** Joined peers a single room accepts. Each one costs memory and fan-out
+ *  work per relayed frame; 24 is far above a real editing session. */
 export const MAX_ROOM_SOCKETS = 24;
+
+/** Hard ceiling on raw sockets, joined or not. A socket that never sends
+ *  `join` still costs memory, and the runtime lets anyone open one — so the
+ *  joined cap alone could be exhausted by idle sockets waiting on the
+ *  session handshake. */
+export const MAX_TOTAL_SOCKETS = 32;
+
+/** Admission for a new socket. `joined` is what the product caps; `total`
+ *  is the memory backstop. */
+export function roomAdmission(total: number, joined: number): "ok" | "full" {
+  return joined >= MAX_ROOM_SOCKETS || total >= MAX_TOTAL_SOCKETS ? "full" : "ok";
+}
 
 /** Per-socket message budget: a simple fixed window (no burst refill).
  *  40/s is ~20x a fast editor's delta rate while still bounding a hostile
@@ -66,6 +78,9 @@ export interface Peer extends PeerIdentity {
 export interface PeerEntry {
   peer: Peer;
   seq: number;
+  /** Set once the peer announced itself with `join`. Unjoined sockets count
+   *  against `MAX_TOTAL_SOCKETS` but not `MAX_ROOM_SOCKETS`. */
+  joined?: boolean;
 }
 
 export function identityOf(peer: Peer): PeerIdentity {
@@ -147,8 +162,11 @@ export class CollabRoom implements DurableObject {
       (req.headers.get("x-collab-user-name") || "Guest").slice(0, MAX_NAME_LENGTH) || "Guest";
 
     // Refuse before allocating a socket: the room is a fan-out hub, so its
-    // size is a hard cost boundary.
-    if (this.ctx.getWebSockets().length >= MAX_ROOM_SOCKETS) {
+    // size is a hard cost boundary. Joined peers hit the product cap; raw
+    // sockets (a client that never sends `join`) hit the memory backstop.
+    const live = this.ctx.getWebSockets();
+    const joined = live.filter((socket) => attachmentOf(socket)?.joined === true).length;
+    if (roomAdmission(live.length, joined) === "full") {
       return new Response("room full", { status: 403 });
     }
 
@@ -217,7 +235,9 @@ export class CollabRoom implements DurableObject {
     switch (msg.t) {
       case "join":
         // Display name/color from the client are ignored on purpose: the
-        // Worker already resolved the session identity.
+        // Worker already resolved the session identity. Marking the socket
+        // here is what makes it count against `MAX_ROOM_SOCKETS`.
+        ws.serializeAttachment({ peer: self, seq: att.seq, joined: true } satisfies PeerEntry);
         safeSend(ws, JSON.stringify({ t: "joined", self: identityOf(self), peers: this.peers() }));
         this.broadcastPresence();
         return;
@@ -294,7 +314,11 @@ export class CollabRoom implements DurableObject {
         const active = msg.active === true;
         if (active === self.active) return;
         self.active = active;
-        ws.serializeAttachment({ peer: self, seq: att.seq } satisfies PeerEntry);
+        ws.serializeAttachment({
+          peer: self,
+          seq: att.seq,
+          joined: att.joined,
+        } satisfies PeerEntry);
         this.broadcastPresence();
         return;
       }

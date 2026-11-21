@@ -76,6 +76,21 @@ describe("unzipSite", () => {
     expect(paths).toHaveLength(MAX_SITE_ASSET_COUNT);
   });
 
+  it("rejects a directory-named entry that carries a payload", () => {
+    // fflate still allocates `originalSize` bytes for a `dir/` name, so the
+    // name alone must not skip the size guards.
+    const zip = zipSync({ "x/": new Uint8Array(30 * 1024 * 1024) }, { level: 0 });
+
+    let error: unknown;
+    try {
+      unzipSite(zip);
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(StaticSiteError);
+    expect((error as StaticSiteError).status).toBe(413);
+  });
+
   it("still rejects 501 real files", () => {
     const entries: Record<string, Uint8Array> = {};
     for (let i = 0; i <= MAX_SITE_ASSET_COUNT; i++) entries[`f${i}.txt`] = new Uint8Array([97]);

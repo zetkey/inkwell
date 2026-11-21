@@ -40,19 +40,34 @@ import type {
 } from "../types";
 import { rowToFolderMeta, rowToMeta } from "../types";
 import { deleteFileObjects } from "./delete-cascade";
+import { readManifest } from "./static-site";
 
 type SqliteBatchItem = BatchItem<"sqlite">;
 
 /** Most files a single duplicate request may copy (recursively). */
 const MAX_DUPLICATE_FILES = MAX_BULK_ITEMS;
 
-/** R2 work one copied file costs: blob get + blob put + thumb get/put. */
-const COPY_OPS_PER_FILE = 3;
-/** Bound on those operations per request. Beyond this a copy is already
- *  long enough to hit per-invocation limits midway, leaving a half-copied
- *  tree, so the request is refused up front. */
-const MAX_COPY_OPS = 800;
+/** R2 work one copied file costs: blob get + blob put + thumb get + thumb
+ *  put. Budgeted for every file, thumbs or not, so the bound is never
+ *  optimistic. */
+const COPY_OPS_PER_FILE = 4;
+/** Bound on those operations per request. A half-finished copy is worse
+ *  than a clear 413, so oversized requests are refused up front. */
+const MAX_COPY_OPS = 700;
 const MAX_COPY_FILES = Math.floor(MAX_COPY_OPS / COPY_OPS_PER_FILE);
+
+/** R2 operations copying `files` will cost. Static sites add one `list`
+ *  per page plus a get+put per asset, which is why their manifest is read
+ *  before the copy starts. */
+export async function copyOpsFor(env: Env, files: readonly FileRow[]): Promise<number> {
+  let ops = files.length * COPY_OPS_PER_FILE;
+  for (const f of files) {
+    if (f.kind !== "static-site") continue;
+    const manifest = await readManifest(env, f.id);
+    ops += 1 + (manifest?.assets.length ?? 0) * 2;
+  }
+  return ops;
+}
 
 // R2 fan-out per request. Keeps a big folder copy fast without
 // stampeding the bucket or the Worker's concurrent-subrequest limit.
@@ -146,6 +161,21 @@ export async function duplicateItems(
     throw new DuplicateError(
       413,
       `duplicate in smaller batches: at most ${MAX_COPY_FILES} files per request`,
+    );
+  }
+  // Static sites cost one list plus two ops per asset on top of the per-file
+  // allowance, so their manifests are read before anything is copied.
+  const copySources = [
+    ...directFiles.flatMap((r) => {
+      const src = sourceFiles.get(r.id);
+      return src ? [src] : [];
+    }),
+    ...nestedFiles,
+  ];
+  if ((await copyOpsFor(env, copySources)) > MAX_COPY_OPS) {
+    throw new DuplicateError(
+      413,
+      "duplicate in smaller batches: this copy exceeds the per-request R2 budget",
     );
   }
 

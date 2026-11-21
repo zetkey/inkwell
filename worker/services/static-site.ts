@@ -101,12 +101,17 @@ export function unzipSite(buf: Uint8Array): Record<string, Uint8Array> {
   try {
     return unzipSync(buf, {
       filter: (file) => {
-        // Directory entries (`dir/`) are not assets; many archive tools emit
-        // them and they must not count against the asset budget.
-        if (file.name.endsWith("/")) return true;
-        entries += 1;
-        if (entries > MAX_SITE_ASSET_COUNT) {
-          throw new StaticSiteError(413, `too many entries (max ${MAX_SITE_ASSET_COUNT})`);
+        const isDir = file.name.endsWith("/");
+        // Only an **empty** directory entry is free: fflate still allocates
+        // `originalSize` bytes for a `dir/` name, so a "directory" carrying a
+        // payload must go through the size checks like any asset. It stays
+        // out of the entry count either way.
+        if (isDir && file.originalSize === 0) return true;
+        if (!isDir) {
+          entries += 1;
+          if (entries > MAX_SITE_ASSET_COUNT) {
+            throw new StaticSiteError(413, `too many entries (max ${MAX_SITE_ASSET_COUNT})`);
+          }
         }
         if (file.originalSize > MAX_SITE_ASSET_BYTES) {
           throw new StaticSiteError(

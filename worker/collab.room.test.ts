@@ -3,11 +3,13 @@ import {
   CollabRoom,
   MAX_FRAME_CHARS,
   MAX_ROOM_SOCKETS,
+  MAX_TOTAL_SOCKETS,
   orderPeers,
   type Peer,
   type PeerEntry,
   presenceFrame,
   RATE_LIMIT_MAX_MESSAGES,
+  roomAdmission,
 } from "./collab";
 
 // Duck-typed WebSocket + DurableObjectState harness. The DO only touches
@@ -26,6 +28,7 @@ function socket(peer: Peer, seq: number): FakeSocket {
     close: () => {},
     serializeAttachment: (next: PeerEntry) => {
       att.peer = next.peer;
+      att.joined = next.joined;
     },
     deserializeAttachment: () => att,
   };
@@ -142,10 +145,11 @@ describe("CollabRoom presence", () => {
 });
 
 describe("CollabRoom limits", () => {
-  it("caps a room at MAX_ROOM_SOCKETS sockets", async () => {
+  it("refuses a new socket once MAX_ROOM_SOCKETS peers have joined", async () => {
     const sockets = Array.from({ length: MAX_ROOM_SOCKETS }, (_, i) =>
       socket(peer(`p${i}`), i + 1),
     );
+    for (const s of sockets) s.att.joined = true;
     const r = room(sockets);
 
     const res = await r.fetch(
@@ -156,6 +160,44 @@ describe("CollabRoom limits", () => {
 
     expect(res.status).toBe(403);
     expect(await res.text()).toBe("room full");
+  });
+
+  it("refuses once MAX_TOTAL_SOCKETS sockets exist, joined or not", async () => {
+    const sockets = Array.from({ length: MAX_TOTAL_SOCKETS }, (_, i) =>
+      socket(peer(`p${i}`), i + 1),
+    );
+    // Only half of them joined: the memory backstop still trips.
+    for (const s of sockets.slice(0, MAX_TOTAL_SOCKETS / 2)) s.att.joined = true;
+    const r = room(sockets);
+
+    const res = await r.fetch(
+      new Request("https://room.test/", {
+        headers: { Upgrade: "websocket", "x-collab-user-id": "u-extra" },
+      }),
+    );
+
+    expect(res.status).toBe(403);
+  });
+
+  it("admits a socket when 24 sockets are open but none joined", () => {
+    // Node's Response cannot represent a 101, so the accept path is checked
+    // through the admission helper instead of building the upgrade.
+    expect(roomAdmission(MAX_ROOM_SOCKETS, 0)).toBe("ok");
+    expect(roomAdmission(MAX_ROOM_SOCKETS, MAX_ROOM_SOCKETS)).toBe("full");
+    expect(roomAdmission(MAX_TOTAL_SOCKETS, 1)).toBe("full");
+  });
+
+  it("counts a socket as joined only after its join frame", () => {
+    const a = socket(peer("a"), 1);
+    const r = room([a]);
+
+    r.webSocketMessage(a.ws, JSON.stringify({ t: "join" }));
+
+    expect(a.att.joined).toBe(true);
+    // Activity updates must carry the flag forward.
+    r.webSocketMessage(a.ws, JSON.stringify({ t: "activity", active: false }));
+    expect(a.att.joined).toBe(true);
+    expect(a.att.peer.active).toBe(false);
   });
 
   it("throttles a socket that floods messages", () => {
