@@ -64,7 +64,6 @@ import {
   fileToItem,
   filterItems,
   folderToItem,
-  formatBytes,
   sortItems,
   summarize,
 } from "@/features/explorer/model";
@@ -80,7 +79,7 @@ import { shares } from "@/lib/api/client";
 import { copyToClipboard } from "@/lib/clipboard";
 import { requestQuickLook } from "@/lib/commands/signals";
 import { errorMessage } from "@/lib/errors";
-import { expiresPhrase } from "@/lib/format";
+import { expiresPhrase, formatBytes } from "@/lib/format";
 import { parseRefKey } from "@/lib/selection";
 import { useMediaQuery } from "@/lib/useMediaQuery";
 import { cn } from "@/lib/utils";

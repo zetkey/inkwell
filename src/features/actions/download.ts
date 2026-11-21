@@ -3,6 +3,7 @@
 
 import type { QueryClient } from "@tanstack/react-query";
 import { type FileKind, type FileMeta, files, type ItemRef } from "@/lib/api/client";
+import { filenameFromDisposition, safeSegment, uniquePath } from "@/lib/filename";
 import { ensureItems, getFoldersCached } from "./itemCache";
 
 const EXT: Record<FileKind, string> = {
@@ -21,43 +22,6 @@ export function triggerUrlDownload(url: string, filename?: string): void {
   document.body.appendChild(a);
   a.click();
   a.remove();
-}
-
-function filenameFromDisposition(h: string | null): string | null {
-  if (!h) return null;
-  const star = /filename\*=UTF-8''([^;]+)/i.exec(h);
-  if (star) {
-    try {
-      return decodeURIComponent(star[1]);
-    } catch {
-      /* fall through */
-    }
-  }
-  const plain = /filename="?([^";]+)"?/i.exec(h);
-  return plain ? plain[1] : null;
-}
-
-function safeSegment(s: string): string {
-  return s.replace(/[\\/:*?"<>|]+/g, "_").trim() || "untitled";
-}
-
-function uniquePath(path: string, used: Set<string>): string {
-  if (!used.has(path)) {
-    used.add(path);
-    return path;
-  }
-  const dot = path.lastIndexOf(".");
-  const slash = path.lastIndexOf("/");
-  const hasExt = dot > slash + 1;
-  const base = hasExt ? path.slice(0, dot) : path;
-  const ext = hasExt ? path.slice(dot) : "";
-  for (let i = 2; ; i++) {
-    const cand = `${base} (${i})${ext}`;
-    if (!used.has(cand)) {
-      used.add(cand);
-      return cand;
-    }
-  }
 }
 
 /** Zips the given refs (folders recursively) and downloads the archive. */

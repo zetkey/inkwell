@@ -11,7 +11,7 @@
 // the realtime socket.
 
 import { useQueryClient } from "@tanstack/react-query";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useSharedFile } from "@/data/shares";
 import type { FileBlob, LoadedFile } from "@/lib/api/client";
@@ -21,7 +21,7 @@ import { errorMessage } from "@/lib/errors";
 import { useTheme } from "@/lib/theme";
 import { shouldOpenCollab } from "./collab/gating";
 import { collabPathForShare } from "./collab/paths";
-import { EditorErrorState, EditorLoadingState } from "./EditorChrome";
+import { EditorErrorState, EditorLoadingState, EditorSuspense } from "./EditorChrome";
 import { EditorHeader } from "./EditorHeader";
 import type { RenderEditorHeader } from "./editorHeaderBridge";
 import { SharedStaticSitePreviewRedirect } from "./StaticSitePreviewRedirect";
@@ -30,10 +30,6 @@ const DrawioEditor = lazy(() => import("@/features/editor/DrawioEditor"));
 const ExcalidrawEditor = lazy(() => import("@/features/editor/ExcalidrawEditor"));
 const ExcalidrawMenu = lazy(() => import("@/features/editor/ExcalidrawMenu"));
 const MarkdownEditor = lazy(() => import("@/features/editor/MarkdownEditor"));
-
-function EditorSuspense({ children }: { children: React.ReactNode }) {
-  return <Suspense fallback={<EditorLoadingState label="Loading editor…" />}>{children}</Suspense>;
-}
 
 interface SharedEditorProps {
   /** Optional preloaded file; used by SharedTokenLanding to avoid a double fetch. */

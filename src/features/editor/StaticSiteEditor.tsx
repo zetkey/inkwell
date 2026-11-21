@@ -53,6 +53,8 @@ import {
 } from "@/lib/api/client";
 import { keys } from "@/lib/api/query-keys";
 import { errorMessage } from "@/lib/errors";
+import { formatBytes } from "@/lib/format";
+import { encodePath } from "@/lib/url";
 import { cn } from "@/lib/utils";
 import { type RenderEditorHeader, staticBridge } from "./editorHeaderBridge";
 import { FilesList } from "./static-site/FilesList";
@@ -273,18 +275,4 @@ function coerceManifest(blob: unknown): StaticSiteFileBlob {
 
 function totalSize(m: StaticSiteFileBlob): number {
   return m.assets.reduce((a, b) => a + b.size, 0);
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-}
-
-/** Percent-encode each path segment without touching the slashes. The
- *  signed URL prefix already contains the asset id + sig; relpath
- *  must be safe to splice in. */
-function encodePath(p: string): string {
-  return p.split("/").map(encodeURIComponent).join("/");
 }

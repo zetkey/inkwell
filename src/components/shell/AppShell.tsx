@@ -11,7 +11,7 @@
 //     toggleDetails(): void;     // also `I` (view.details)
 //     isMobile: boolean;         // < 768px
 //   }
-//   useInShell(): boolean        – true inside the shell (AppPage uses it to drop its own chrome)
+//   useInShell(): boolean        – true inside the shell
 //
 // Pages render inside <main> (a flex column; use PageFrame / PageToolbar /
 // PageBody / StatusBar from ./page) and portal their inspector through

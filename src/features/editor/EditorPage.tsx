@@ -33,7 +33,7 @@ import {
   StarIcon,
 } from "@hugeicons/core-free-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { openShortcutSheet } from "@/components/shell/shellStore";
 import { useFile } from "@/data/files";
@@ -50,7 +50,7 @@ import { keys } from "@/lib/api/query-keys";
 import type { Command } from "@/lib/commands/registry";
 import { errorMessage } from "@/lib/errors";
 import { useTheme } from "@/lib/theme";
-import { EditorErrorState, EditorLoadingState } from "./EditorChrome";
+import { EditorErrorState, EditorLoadingState, EditorSuspense } from "./EditorChrome";
 import { EditorHeader } from "./EditorHeader";
 import { EditorOverlays } from "./EditorOverlays";
 import type { EditorHeaderBridge, RenderEditorHeader } from "./editorHeaderBridge";
@@ -60,10 +60,6 @@ const ExcalidrawEditor = lazy(() => import("./ExcalidrawEditor"));
 const ExcalidrawMenu = lazy(() => import("./ExcalidrawMenu"));
 const MarkdownEditor = lazy(() => import("./MarkdownEditor"));
 const StaticSiteEditor = lazy(() => import("./StaticSiteEditor"));
-
-function EditorSuspense({ children }: { children: React.ReactNode }) {
-  return <Suspense fallback={<EditorLoadingState label="Loading editor…" />}>{children}</Suspense>;
-}
 
 function folderUrl(folderId: string | null): string {
   return folderId ? `/folders/${folderId}` : "/";

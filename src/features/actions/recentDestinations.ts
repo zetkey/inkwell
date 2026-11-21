@@ -1,9 +1,8 @@
 // Recent move destinations (localStorage `inkwell.recentDestinations`, max 6).
 //
 // PUBLIC CONTRACT
-//   getRecentDestinations(): Array<string | null>   – folder ids, `null` = Home; newest first
 //   pushRecentDestination(folderId: string | null)
-//   useRecentDestinations(): Array<string | null>
+//   useRecentDestinations(): Array<string | null>   – folder ids, `null` = Home; newest first
 
 import { createStore, useStore } from "@/lib/store";
 
@@ -22,10 +21,6 @@ function read(): Array<string | null> {
 }
 
 const store = createStore<Array<string | null>>(typeof localStorage === "undefined" ? [] : read());
-
-export function getRecentDestinations(): Array<string | null> {
-  return store.get();
-}
 
 export function pushRecentDestination(folderId: string | null): void {
   const next = [folderId, ...store.get().filter((x) => x !== folderId)].slice(0, MAX);

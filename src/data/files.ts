@@ -11,8 +11,11 @@
 // owns the working copy after first arrival; we never refetch in the
 // background and clobber unsaved edits. Reload-after-409 is done via
 // `queryClient.fetchQuery` from the page.
+//
+// Mutations (create/rename/move/delete/tags) go through the shared
+// item actions instead, which write the cache optimistically.
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   type ApiError,
   type FileMeta,
@@ -21,7 +24,6 @@ import {
   type LoadedFile,
 } from "@/lib/api/client";
 import { keys } from "@/lib/api/query-keys";
-import { invalidations } from "./invalidations";
 
 // ─── Queries ──────────────────────────────────────────────────────────
 export function useFiles(query: FilesQuery) {
@@ -40,50 +42,5 @@ export function useFile(id: string) {
     // Editor owns the working copy after first arrival.
     staleTime: Infinity,
     gcTime: Infinity,
-  });
-}
-
-// ─── Mutations ───────────────────────────────────────────────────────
-export function useCreateFile() {
-  const qc = useQueryClient();
-  return useMutation<FileMeta, ApiError, Parameters<typeof files.create>[0] | undefined>({
-    mutationFn: (body) => files.create(body),
-    onSuccess: () => invalidations.fileMutated(qc),
-  });
-}
-
-export function useRenameFile() {
-  const qc = useQueryClient();
-  return useMutation<FileMeta, ApiError, { id: string; name: string }>({
-    mutationFn: ({ id, name }) => files.rename(id, name),
-    onSuccess: () => invalidations.fileMutated(qc),
-  });
-}
-
-export function useMoveFile() {
-  const qc = useQueryClient();
-  return useMutation<FileMeta, ApiError, { id: string; folderId: string | null }>({
-    mutationFn: ({ id, folderId }) => files.move(id, folderId),
-    onSuccess: () => invalidations.fileMutated(qc),
-  });
-}
-
-export function useDeleteFile() {
-  const qc = useQueryClient();
-  return useMutation<{ ok: true }, ApiError, string>({
-    mutationFn: (id) => files.delete(id),
-    onSuccess: () => invalidations.fileMutated(qc, { sharesChanged: true }),
-  });
-}
-
-export function useSetFileTags() {
-  const qc = useQueryClient();
-  return useMutation<
-    { id: string; tags: string[]; updatedAt: number },
-    ApiError,
-    { id: string; tags: string[] }
-  >({
-    mutationFn: ({ id, tags: t }) => files.setTags(id, t),
-    onSuccess: () => invalidations.fileMutated(qc, { tagsChanged: true }),
   });
 }

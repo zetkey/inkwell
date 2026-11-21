@@ -1,4 +1,4 @@
-// User menu — avatar + dropdown shared by Topbar and ExplorerHeader.
+// User menu — avatar + dropdown shared by the shells' top bars.
 //
 // Note: this used to be duplicated across both headers with subtly
 // different trigger styling. Unified here on the shadcn `<Button

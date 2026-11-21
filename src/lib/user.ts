@@ -1,7 +1,7 @@
 // Display helpers for User / AdminUser objects.
 //
-// Replaces inline copies of the same logic in Topbar.tsx and
-// ExplorerHeader.tsx (and Admin.tsx).
+// Replaces inline copies of the same logic in ExplorerHeader.tsx
+// (and Admin.tsx).
 
 import type { User } from "@/lib/api/client";
 

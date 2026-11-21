@@ -45,6 +45,7 @@ import { folderPath } from "@/features/folders/FolderTree";
 import { DropOverlay, dragHasFiles, openUploadPicker } from "@/features/upload";
 import type { FileKind } from "@/lib/api/client";
 import { hasFolderView, type SortKey, useExplorerPref, useFolderView } from "@/lib/explorerPrefs";
+import { formatBytes } from "@/lib/format";
 import { parseRefKey } from "@/lib/selection";
 import { BulkBar } from "./BulkBar";
 import { EmptyFolder } from "./EmptyFolder";
@@ -53,7 +54,6 @@ import { ExplorerToolbar } from "./ExplorerToolbar";
 import {
   type ExplorerItem,
   filterItems,
-  formatBytes,
   type ItemKind,
   type ItemSort,
   sortItems,

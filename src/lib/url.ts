@@ -8,3 +8,9 @@ export const shareUrl = (token: string): string => `${location.origin}/share/${t
 
 /** Invite acceptance URL for an invite token. */
 export const inviteUrl = (token: string): string => `${location.origin}/invite/${token}`;
+
+/** Percent-encode each path segment of a signed-URL suffix without
+ *  touching the slashes. */
+export function encodePath(p: string): string {
+  return p.split("/").map(encodeURIComponent).join("/");
+}

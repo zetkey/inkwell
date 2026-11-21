@@ -40,7 +40,7 @@ import type { ItemRef } from "@/lib/api/client";
 import { getExplorerPref } from "@/lib/explorerPrefs";
 import { createStore, useStore } from "@/lib/store";
 
-export const ITEM_MIME = "application/x-inkwell-items";
+const ITEM_MIME = "application/x-inkwell-items";
 export const SPRING_EVENT = "inkwell:spring";
 const SPRING_MS = 700;
 const TARGET_SELECTOR = "[data-drop-folder],[data-drop-trash]";

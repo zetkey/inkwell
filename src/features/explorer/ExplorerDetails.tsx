@@ -24,17 +24,10 @@ import { itemActions } from "@/features/actions/useItemActions";
 import { PermBadge } from "@/features/library/ListTable";
 import type { FileMeta, FolderMeta, ItemRef } from "@/lib/api/client";
 import { runCommand } from "@/lib/commands/registry";
-import { expiresPhrase, fmtDateTime } from "@/lib/format";
+import { expiresPhrase, fmtDateTime, formatBytes } from "@/lib/format";
 import { parseRefKey } from "@/lib/selection";
 import { cn } from "@/lib/utils";
-import {
-  type ExplorerItem,
-  fileToItem,
-  folderToItem,
-  formatBytes,
-  KIND_META,
-  summarize,
-} from "./model";
+import { type ExplorerItem, fileToItem, folderToItem, KIND_META, summarize } from "./model";
 import { useSelectedKeys } from "./state";
 import { ItemPreview, PropertyList } from "./views/ItemPreview";
 import { ItemThumb, TagPill } from "./views/ItemVisuals";

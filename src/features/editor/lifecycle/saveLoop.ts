@@ -15,7 +15,7 @@ import type { EditorSaveStatus, SaveLifecycleTransport } from "./types";
 // 30s autosave debounce. Both editors used this exact value
 // independently — keeping it in one place is the whole point of this
 // extraction.
-export const SAVE_DEBOUNCE_MS = 30_000;
+const SAVE_DEBOUNCE_MS = 30_000;
 
 /**
  * Snapshot returned by `getLatest()`. The fingerprint is a cheap

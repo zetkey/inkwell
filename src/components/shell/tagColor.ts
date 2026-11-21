@@ -3,9 +3,8 @@
 // PUBLIC CONTRACT
 //   tagColor(name): string   – CSS colour (hsl) derived from a hash of the lowercased name;
 //                              identical on every surface (sidebar dots, pills, palette).
-//   tagHue(name): number     – 0–359
 
-export function tagHue(name: string): number {
+function tagHue(name: string): number {
   let h = 2166136261;
   const s = name.trim().toLowerCase();
   for (let i = 0; i < s.length; i++) {

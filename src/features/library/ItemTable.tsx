@@ -9,7 +9,6 @@
 //     columns: ItemColumn[] – "location" | "modified" | "kind" | "size" | "tags" | "starred"
 //   <ItemIcon kind? size? />     – kind glyph or folder icon
 //   LIBRARY_ITEM_MENU_IDS         – row context-menu command ids
-//   kindShortLabel(kind?)         – "Excalidraw" · "draw.io" · "Markdown" · "Site" · "Folder"
 
 import { Folder01Icon, Link04Icon, StarIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -58,7 +57,7 @@ export const LIBRARY_ITEM_MENU_IDS = [
   "item.trash",
 ] as const;
 
-export function kindShortLabel(kind?: FileKind): string {
+function kindShortLabel(kind?: FileKind): string {
   switch (kind) {
     case "excalidraw":
       return "Excalidraw";

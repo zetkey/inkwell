@@ -2,13 +2,10 @@
 //
 // PUBLIC CONTRACT
 //   interface UndoEntry { label: string; undo: () => Promise<void> }
-//   pushUndo(entry): string                 – returns the entry id
 //   undoLast(): Promise<boolean>            – pops + runs the newest entry (toast "Undone: …")
-//   runUndo(id): Promise<boolean>           – runs a specific entry (used by toast buttons)
 //   toastWithUndo(message, undo, opts?)     – sonner toast with an "Undo" action; also pushes
 //                                             the entry so ⌘Z works. `opts.label` overrides the
 //                                             stack label (defaults to `message`).
-//   useUndoCount(): number
 //   createUndoStack(limit)                  – pure stack factory (exported for tests)
 //
 // The `app.undo` command (mod+z) is registered in
@@ -16,7 +13,7 @@
 
 import { toast } from "sonner";
 import { errorMessage } from "@/lib/errors";
-import { createStore, useStore } from "@/lib/store";
+import { createStore } from "@/lib/store";
 
 export interface UndoEntry {
   label: string;
@@ -58,7 +55,7 @@ export function createUndoStack(limit = 20) {
 
 const stack = createUndoStack(20);
 
-export function pushUndo(entry: UndoEntry): string {
+function pushUndo(entry: UndoEntry): string {
   return stack.push(entry);
 }
 
@@ -83,7 +80,7 @@ export function undoLast(): Promise<boolean> {
   return execute(entry);
 }
 
-export function runUndo(id: string): Promise<boolean> {
+function runUndo(id: string): Promise<boolean> {
   return execute(stack.take(id));
 }
 
@@ -103,8 +100,4 @@ export function toastWithUndo(
     },
   });
   return id;
-}
-
-export function useUndoCount(): number {
-  return useStore(stack.store, (s) => s.length);
 }

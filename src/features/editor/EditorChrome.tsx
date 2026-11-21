@@ -11,10 +11,16 @@
 
 import { Alert02Icon, ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Suspense } from "react";
 import { Link } from "react-router-dom";
 import { InkwellMark } from "@/components/InkwellMark";
 import { Surface } from "@/components/Surface";
 import { Button } from "@/components/ui/button";
+
+/** Suspense boundary around the lazily-loaded editors. */
+export function EditorSuspense({ children }: { children: React.ReactNode }) {
+  return <Suspense fallback={<EditorLoadingState label="Loading editor…" />}>{children}</Suspense>;
+}
 
 export function EditorLoadingState({ label }: { label: string }) {
   return (

@@ -22,9 +22,9 @@ import {
 import { useFolders } from "@/data/folders";
 import { folderPathLabel } from "@/features/actions/itemCache";
 import { type ListColumn, useExplorerPref } from "@/lib/explorerPrefs";
-import { fmtDateTime } from "@/lib/format";
+import { fmtDateTime, formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { type ExplorerItem, formatBytes, type ItemSort, kindLabel } from "../model";
+import { type ExplorerItem, type ItemSort, kindLabel } from "../model";
 import { dispatchSelection, useSelectedKeys } from "../state";
 import {
   Collection,

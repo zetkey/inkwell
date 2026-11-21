@@ -61,7 +61,7 @@ export function parseRefKey(key: string): ItemRef | null {
   return m ? { type: m[1] as ItemRef["type"], id: m[2] } : null;
 }
 
-export function sameRef(a: ItemRef | null | undefined, b: ItemRef | null | undefined): boolean {
+function sameRef(a: ItemRef | null | undefined, b: ItemRef | null | undefined): boolean {
   return !!a && !!b && a.type === b.type && a.id === b.id;
 }
 

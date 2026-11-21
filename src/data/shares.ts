@@ -1,11 +1,10 @@
 // Share data hooks (owner-side + public visitor + editor-side
 // shared-file loaders).
 //
-// `useShareList` / `useCreateShare` / `useUpdateShare` /
-// `useRotateShare` / `useRevokeShare` abstract over the file-vs-folder
-// dichotomy so the ShareDialog (which works for both) doesn't need its
-// own internal adapter pair. The right endpoint is chosen from
-// `targetType`.
+// `useShareList` / `useCreateShare` / `useRotateShare` /
+// `useRevokeShare` abstract over the file-vs-folder dichotomy so the
+// ShareDialog (which works for both) doesn't need its own internal
+// adapter pair. The right endpoint is chosen from `targetType`.
 //
 // `useAllShares` returns every share owned by the caller across both
 // targets — used by the centralized `/shares` page.
@@ -49,16 +48,6 @@ export function useCreateShare(targetType: ShareTargetType, targetId: string) {
   });
 }
 
-export function useUpdateShare(targetType: ShareTargetType, targetId: string) {
-  const qc = useQueryClient();
-  return useMutation<Share, ApiError, { token: string; body: Parameters<typeof shares.update>[1] }>(
-    {
-      mutationFn: ({ token, body }) => shares.update(token, body),
-      onSuccess: () => invalidations.shareMutated(qc, targetType, targetId),
-    },
-  );
-}
-
 export function useRotateShare(targetType: ShareTargetType, targetId: string) {
   const qc = useQueryClient();
   return useMutation<{ old: { token: string }; new: Share }, ApiError, string>({
@@ -86,14 +75,6 @@ export function useAllShares() {
   return useQuery<Share[], ApiError>({
     queryKey: keys.sharesAll,
     queryFn: () => shares.listAll(),
-  });
-}
-
-export function useRevokeShareByToken() {
-  const qc = useQueryClient();
-  return useMutation<{ ok: true }, ApiError, string>({
-    mutationFn: (token) => shares.revoke(token),
-    onSuccess: () => invalidations.shareMutatedGeneric(qc),
   });
 }
 

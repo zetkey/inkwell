@@ -8,6 +8,7 @@
 import { useMemo } from "react";
 import { EmptyState } from "@/components/EmptyState";
 import type { StaticSiteFileBlob } from "@/lib/api/client";
+import { formatBytes } from "@/lib/format";
 import { FileRow } from "./FileRow";
 
 export interface FilesListProps {
@@ -90,13 +91,4 @@ export function FilesList({
       )}
     </section>
   );
-}
-
-// Local copy of the byte formatter — kept here so `FilesList` is
-// drop-in usable without importing from `StaticSiteEditor`.
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }

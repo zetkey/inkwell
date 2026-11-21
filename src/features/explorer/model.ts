@@ -8,20 +8,13 @@
 //     shareCount; sizeBytes; createdAt; updatedAt; itemCount?; thumbUrl; file?; folder?;
 //     extra? }
 //   toExplorerItems(folders, files, opts?): ExplorerItem[]
-//   folderToItem(f) / fileToItem(f, opts?) / trashToItem(t)
+//   folderToItem(f) / fileToItem(f, opts?)
 //   sortItems(items, sorts, opts?): ExplorerItem[]      – stable, multi-key, folders first
 //   filterItems(items, filter): ExplorerItem[]
 //   KIND_META / KIND_ORDER / kindLabel(kind)
 //   summarize(items): { folders; files; bytes }
 
-import type {
-  FileKind,
-  FileMeta,
-  FolderMeta,
-  ItemRef,
-  ItemType,
-  TrashItem,
-} from "@/lib/api/client";
+import type { FileKind, FileMeta, FolderMeta, ItemRef, ItemType } from "@/lib/api/client";
 import { files as filesApi } from "@/lib/api/client";
 
 export type ItemKind = FileKind | "folder";
@@ -67,7 +60,7 @@ export function kindLabel(kind: ItemKind): string {
 }
 
 /** Unknown / legacy kinds render as Excalidraw (the original kind). */
-export function normalizeKind(kind: string | null | undefined): FileKind {
+function normalizeKind(kind: string | null | undefined): FileKind {
   return (KIND_ORDER as string[]).includes(kind ?? "") ? (kind as FileKind) : "excalidraw";
 }
 
@@ -116,32 +109,6 @@ export function fileToItem(f: FileMeta, opts: { thumbUrl?: (f: FileMeta) => stri
     file: f,
   };
   return item;
-}
-
-/** Trash rows → items (`extra` carries originalPath / deletedAt / purgeAt). */
-export function trashToItem(t: TrashItem): ExplorerItem {
-  return {
-    key: `${t.type}:${t.id}`,
-    ref: { type: t.type, id: t.id },
-    type: t.type,
-    id: t.id,
-    name: t.name,
-    kind: t.type === "folder" ? "folder" : normalizeKind(t.kind),
-    parentId: t.originalParentId,
-    tags: [],
-    starred: false,
-    shareCount: 0,
-    sizeBytes: t.type === "file" ? (t.sizeBytes ?? 0) : null,
-    createdAt: t.deletedAt,
-    updatedAt: t.deletedAt,
-    itemCount: t.itemCount,
-    thumbUrl: null,
-    extra: {
-      originalPath: t.originalPath,
-      deletedAt: t.deletedAt,
-      purgeAt: t.purgeAt,
-    },
-  };
 }
 
 /** Folders first (in given order), then files. Pass the *direct
@@ -252,11 +219,4 @@ export function summarize(items: readonly ExplorerItem[]): {
     }
   }
   return { folders, files, bytes };
-}
-
-export function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }

@@ -145,9 +145,6 @@ export interface RestoredItem {
   relocatedToRoot: boolean;
 }
 
-/** Max refs accepted by any `/api/items/*` endpoint (413 above). */
-export const MAX_BULK_ITEMS = 500;
-
 export interface Tag {
   id: string;
   name: string;
@@ -823,8 +820,8 @@ function parseSharedBy(header: string | null): SharedBy | null {
 }
 
 // ─── Bulk item operations (files + folders) ──────────────────────────
-// All endpoints accept at most `MAX_BULK_ITEMS` refs and run as one D1
-// batch. Folder operations apply to the whole subtree.
+// All endpoints accept at most 500 refs and run as one D1 batch.
+// Folder operations apply to the whole subtree.
 export const items = {
   /** Move into `targetFolderId` (`null` = root). 409 on a folder cycle. */
   move: (refs: ItemRef[], targetFolderId: string | null) =>

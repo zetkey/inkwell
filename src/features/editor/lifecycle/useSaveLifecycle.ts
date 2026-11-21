@@ -11,11 +11,8 @@
 // and `discardPendingLocalWork()` is the explicit way to drop it.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SAVE_DEBOUNCE_MS, SaveLoop, type SaveLoopLive, type SaveSnapshot } from "./saveLoop";
+import { SaveLoop, type SaveLoopLive, type SaveSnapshot } from "./saveLoop";
 import type { EditorSaveStatus } from "./types";
-
-export type { SaveSnapshot };
-export { SAVE_DEBOUNCE_MS };
 
 export interface UseSaveLifecycleOptions<TBlob, TLoaded extends { meta: { version: number } }>
   extends Omit<SaveLoopLive<TBlob, TLoaded>, "onSaved" | "onReload"> {

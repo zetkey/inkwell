@@ -35,13 +35,9 @@ import { DrawioSidebarToggles } from "./DrawioSidebarToggles";
 import { sanitizeSvg } from "./drawioSanitize";
 import type { EditorHeaderBridge, RenderEditorHeader } from "./editorHeaderBridge";
 import { LeaveConfirmDialog } from "./lifecycle/LeaveConfirmDialog";
-import type { EditorSaveStatus } from "./lifecycle/types";
 import { useDebounced } from "./lifecycle/useDebounced";
 import { useLeaveConfirm } from "./lifecycle/useLeaveConfirm";
 import { useSaveLifecycle } from "./lifecycle/useSaveLifecycle";
-
-// Re-exported so callers using the legacy name keep building.
-export type DrawioSaveStatus = EditorSaveStatus;
 
 // LocalStorage key for the one-shot sketch touch hint. Cleared by
 // the user implicitly when they pick a different Editor style and

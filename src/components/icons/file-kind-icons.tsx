@@ -45,7 +45,7 @@ export function FileKindGlyph({
   return <ExcalidrawLogo variant={variant} className={className} />;
 }
 
-export function fileKindLabel(kind: FileKind): string {
+function fileKindLabel(kind: FileKind): string {
   switch (kind) {
     case "drawio":
       return "draw.io file";
@@ -55,26 +55,6 @@ export function fileKindLabel(kind: FileKind): string {
       return "static site";
     default:
       return "excalidraw file";
-  }
-}
-
-/** Menu label for the per-kind download item, e.g.
- *  "Download .excalidraw" / "Download .drawio" / "Download .md".
- *
- *  Pulled out of the editor pages so adding a new kind is a one-line
- *  change here, and so the same label is used everywhere a download
- *  is offered (owner editor MainMenu, drawio File-menu extras,
- *  shared-page MainMenu, Markdown editor chrome). */
-export function downloadLabelForKind(kind: FileKind): string {
-  switch (kind) {
-    case "drawio":
-      return "Download .drawio";
-    case "notes":
-      return "Download .md";
-    case "static-site":
-      return "Download .zip";
-    default:
-      return "Download .excalidraw";
   }
 }
 

@@ -50,13 +50,6 @@ export function stampElements(elements: readonly ExcalidrawElement[]): Map<strin
   return new Map(elements.map((element) => [element.id, elementStamp(element)]));
 }
 
-export function isElementChanged(
-  before: ExcalidrawElement | undefined,
-  after: ExcalidrawElement,
-): boolean {
-  return !before || elementStamp(before) !== elementStamp(after);
-}
-
 /**
  * Elements whose stamp differs from `known` — new elements included.
  * Deletions travel as `isDeleted: true` elements (Excalidraw keeps

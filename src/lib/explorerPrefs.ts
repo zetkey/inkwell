@@ -200,10 +200,6 @@ export function resetExplorerPref(key: ExplorerPrefKey): void {
   notify(fk);
 }
 
-export function subscribeExplorerPref(key: ExplorerPrefKey, l: () => void): () => void {
-  return subscribeKey(storageKey(key), l);
-}
-
 export function useExplorerPref<K extends ExplorerPrefKey>(
   key: K,
 ): [ExplorerPrefs[K], (v: ExplorerPrefs[K]) => void] {

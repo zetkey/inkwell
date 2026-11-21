@@ -4,9 +4,9 @@
 import type { ReactNode } from "react";
 import { useFolders } from "@/data/folders";
 import { folderPathLabel } from "@/features/actions/itemCache";
-import { fmtDateTime } from "@/lib/format";
+import { fmtDateTime, formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { type ExplorerItem, formatBytes, kindLabel } from "../model";
+import { type ExplorerItem, kindLabel } from "../model";
 import { ItemIcon, ItemThumb, TagPill } from "./ItemVisuals";
 
 export function PropertyList({
