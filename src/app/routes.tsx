@@ -14,7 +14,6 @@ import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes, useParams } from "react-router-dom";
 import { AppShell } from "@/components/shell/AppShell";
 import { useMe } from "@/data/auth";
-import { UsersPage } from "@/features/admin/UsersPage";
 import { InviteAcceptPage } from "@/features/auth/InviteAcceptPage";
 import { LoginPage } from "@/features/auth/LoginPage";
 import { ExplorerPage } from "@/features/explorer/ExplorerPage";
@@ -22,9 +21,16 @@ import { RecentPage } from "@/features/library/RecentPage";
 import { StarredPage } from "@/features/library/StarredPage";
 import { TagPage } from "@/features/library/TagPage";
 import { TrashPage } from "@/features/library/TrashPage";
-import { SettingsPage } from "@/features/settings/SettingsPage";
-import { SharesPage } from "@/features/sharing/SharesPage";
 
+const SharesPage = lazy(() =>
+  import("@/features/sharing/SharesPage").then((module) => ({ default: module.SharesPage })),
+);
+const SettingsPage = lazy(() =>
+  import("@/features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage })),
+);
+const UsersPage = lazy(() =>
+  import("@/features/admin/UsersPage").then((module) => ({ default: module.UsersPage })),
+);
 const EditorPage = lazy(() =>
   import("@/features/editor/EditorPage").then((module) => ({ default: module.EditorPage })),
 );
@@ -61,15 +67,11 @@ export function AppRoutes() {
         <Route path="/starred" element={<StarredPage />} />
         <Route path="/trash" element={<TrashPage />} />
         <Route path="/tags/:tag" element={<TagPage />} />
-        <Route path="/shares" element={<SharesPage />} />
-        <Route path="/settings/:section?" element={<SettingsPage />} />
+        <Route path="/shares" element={lazyRoute(<SharesPage />)} />
+        <Route path="/settings/:section?" element={lazyRoute(<SettingsPage />)} />
         <Route
           path="/users/:tab?"
-          element={
-            <RequireAdmin>
-              <UsersPage />
-            </RequireAdmin>
-          }
+          element={<RequireAdmin>{lazyRoute(<UsersPage />)}</RequireAdmin>}
         />
       </Route>
 

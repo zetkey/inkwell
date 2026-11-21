@@ -25,7 +25,6 @@ import { useCollab } from "./collab/useCollab";
 import type { EditorHeaderBridge, RenderEditorHeader } from "./editorHeaderBridge";
 import { renderExcalidrawThumbSvg } from "./excalidrawThumb";
 import { LeaveConfirmDialog } from "./lifecycle/LeaveConfirmDialog";
-import type { EditorSaveStatus } from "./lifecycle/types";
 import { useLeaveConfirm } from "./lifecycle/useLeaveConfirm";
 import { useSaveLifecycle } from "./lifecycle/useSaveLifecycle";
 import { useThumbPipeline } from "./lifecycle/useThumbPipeline";
@@ -38,10 +37,6 @@ interface ExcalidrawSnapshot {
   files: BinaryFiles;
   fp: string;
 }
-
-// Re-exported for downstream consumers. The status-name source of
-// truth lives in `./lifecycle/types`.
-export type { EditorSaveStatus };
 
 export interface ExcalidrawEditorProps {
   loaded: LoadedFile;

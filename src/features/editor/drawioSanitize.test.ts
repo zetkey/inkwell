@@ -90,6 +90,19 @@ describe("sanitizeSvg", () => {
     expect(clean).toContain("https://example.com");
   });
 
+  it("rejects an inline SVG data URL but keeps raster data URLs", () => {
+    const svg = sanitizeSvg(
+      '<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="/><image href="data:image/webp;base64,AAAA"/><rect/></svg>',
+    );
+    const png = sanitizeSvg(
+      '<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/png;base64,AAA"/></svg>',
+    );
+
+    expect(svg).not.toContain("image/svg+xml");
+    expect(svg).toContain("data:image/webp;base64,AAAA");
+    expect(png).toContain("data:image/png;base64,AAA");
+  });
+
   it("drops src attributes with a non-image scheme", () => {
     const clean = sanitizeSvg(
       '<svg xmlns="http://www.w3.org/2000/svg"><image src="javascript:alert(1)" href="data:image/png;base64,AAA"/></svg>',

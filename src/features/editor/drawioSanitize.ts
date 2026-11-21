@@ -33,9 +33,13 @@ function isSafeUrl(value: string): boolean {
   return url.startsWith("#") || url.startsWith("http:") || url.startsWith("https:");
 }
 
+/** Inline image data is only trusted for raster formats: an
+ *  `image/svg+xml` payload is a document that can carry its own markup. */
+const RASTER_DATA_URL = /^data:image\/(png|jpe?g|gif|webp)[;,]/;
+
 function isSafeImageSrc(value: string): boolean {
   const url = value.trim().toLowerCase();
-  return url.startsWith("data:image/") || url.startsWith("http:") || url.startsWith("https:");
+  return RASTER_DATA_URL.test(url) || url.startsWith("http:") || url.startsWith("https:");
 }
 
 /** `<use>` may only reference a fragment of this same document: an

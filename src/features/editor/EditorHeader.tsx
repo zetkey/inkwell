@@ -756,8 +756,8 @@ function ConflictBanner({ onReload, onDismiss }: { onReload: () => void; onDismi
         className="size-4 shrink-0 text-destructive"
       />
       <span className="min-w-0 flex-1">
-        This file was saved from another tab or device. Inkwell picked up the newer version — reload
-        to see it (edits made since your last save are dropped).
+        The newer version from another tab or device is already loaded; edits you made since your
+        last save were discarded.
       </span>
       <Button variant="outline" size="xs" onClick={onReload}>
         <HugeiconsIcon icon={RefreshIcon} strokeWidth={2} />
