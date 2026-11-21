@@ -114,26 +114,63 @@ export function useLeaveConfirm(opts: UseLeaveConfirmOptions): UseLeaveConfirmRe
   }, [saveNow]);
 
   // ─── Browser Back guard ────────────────────────────────────────────
-  // The editor's URL, captured while we are on it (after a popstate,
-  // `window.location` is already the destination).
-  const hereUrlRef = useRef<string | null>(null);
+  // The editor's URL and history index, captured while we are on it
+  // (after a popstate, `window.location` is already the destination).
+  // Cross-document entries never fire a popstate here — the document is
+  // unloaded instead — so every destination is same-origin and its path
+  // identifies it; no origin has to be reconstructed.
+  const hereRef = useRef<{ url: string; idx: number | null } | null>(null);
+  // URL a pending `history.go(-1)` of ours is expected to land on; that
+  // popstate must not open the dialog a second time.
+  const expectedPopRef = useRef<string | null>(null);
+
   useEffect(() => {
-    hereUrlRef.current = window.location.pathname + window.location.search + window.location.hash;
+    const state = window.history.state as { idx?: unknown } | null;
+    hereRef.current = {
+      url: window.location.pathname + window.location.search + window.location.hash,
+      idx: typeof state?.idx === "number" ? state.idx : null,
+    };
   });
 
   useEffect(() => {
+    const urlNow = () => window.location.pathname + window.location.search + window.location.hash;
+
     const onPopState = () => {
-      const here = hereUrlRef.current;
-      if (!here || !dirtyRef.current || busyRef.current) return;
-      const dest = window.location.pathname + window.location.search + window.location.hash;
-      if (dest === here) return;
-      // Restore the editor in the router so it stays mounted and the dialog
-      // can decide. `replace` keeps the history length unchanged; the
-      // continuation replaces the pending destination instead of pushing a
-      // second entry, so leaving does not grow the back stack.
-      navigate(here, { replace: true });
-      requestLeave(() => navigate(dest, { replace: true }));
+      const here = hereRef.current;
+      if (!here) return;
+      const dest = urlNow();
+      const expected = expectedPopRef.current;
+      expectedPopRef.current = null;
+      if (expected === dest) return; // our own step back to the destination
+
+      if (!dirtyRef.current) return; // clean: let the navigation through
+      if (dest === here.url) return;
+
+      const state = window.history.state as { idx?: unknown } | null;
+      const destIdx = typeof state?.idx === "number" ? state.idx : null;
+      const delta = here.idx !== null && destIdx !== null ? here.idx - destIdx : null;
+
+      // Re-enter the editor entry through the router, synchronously: the
+      // router would otherwise render the destination on its next commit
+      // and unmount this dialog. `navigate` (push) truncates the forward
+      // entry, which after a Back is this same editor URL, so the history
+      // stack ends up unchanged — Stay does not trap the user and the
+      // destination survives. The continuation steps back onto it.
+      navigate(here.url);
+      requestLeave(() => {
+        if (delta !== null && delta > 0) {
+          // Back: retrace exactly one entry, no URL rebuild.
+          expectedPopRef.current = dest;
+          navigate(-1);
+          return;
+        }
+        // Forward / no index: replace, so the destination is not pushed
+        // twice. (A forward popstate while dirty is rare: it needs a
+        // Forward into the editor after an earlier Back.)
+        navigate(dest, { replace: true });
+      });
     };
+
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, [navigate, requestLeave]);

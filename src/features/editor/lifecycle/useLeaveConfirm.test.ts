@@ -1,17 +1,17 @@
 // @vitest-environment jsdom
 //
-// Browser Back while dirty must keep the editor mounted and open the leave
-// dialog. The guard has to move the location *through the router*: the
-// router is already on the destination by the time `popstate` fires, so a
-// raw `history.pushState` leaves it desynced (editor unmounts, dialog never
-// shows) and breaks the back stack.
+// Browser Back while dirty must keep the editor mounted, open the leave
+// dialog AND leave the back stack intact: walking back through the router
+// (`navigate(delta)` / `navigate(-delta)`) keeps the destination entry, so
+// a Stay does not trap the user and a burst of Backs still reaches the
+// newest destination.
 //
 // Written without JSX because `vitest.config.ts` only includes `.test.ts`.
 
 import { act, createElement as h, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { BrowserRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useLeaveConfirm } from "./useLeaveConfirm";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -39,6 +39,16 @@ function Editor({ dirty, saveOk }: { dirty: boolean; saveOk: boolean }) {
     h("span", { "data-testid": "error" }, leave.errorMessage ?? ""),
     h("button", { type: "button", onClick: () => void leave.saveAndLeave() }, "save-and-leave"),
     h("button", { type: "button", onClick: () => leave.cancel() }, "stay"),
+    h("button", { type: "button", onClick: () => leave.discard() }, "discard"),
+  );
+}
+
+function StartPage() {
+  const navigate = useNavigate();
+  return h(
+    "div",
+    { "data-testid": "start" },
+    h("button", { type: "button", onClick: () => navigate("/other") }, "open other"),
   );
 }
 
@@ -65,6 +75,7 @@ async function mount(dirty: boolean, saveOk = true) {
         h(
           Routes,
           null,
+          h(Route, { path: "/start", element: h(StartPage) }),
           h(Route, { path: "/other", element: h(OtherPage) }),
           h(Route, { path: "/editor", element: h(Editor, { dirty, saveOk }) }),
         ),
@@ -87,25 +98,31 @@ async function click(label: string) {
   });
 }
 
-/** jsdom performs the history traversal on its own task, then fires popstate. */
-async function pressBack() {
+/** jsdom performs history traversals (and the guard's restore) on tasks,
+ *  so wait for the resulting state instead of guessing a delay. */
+const waitFor = (check: () => void) => vi.waitFor(check, { timeout: 2_000, interval: 10 });
+
+async function pressBack(times = 1) {
   await act(async () => {
-    window.history.back();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    for (let i = 0; i < times; i++) window.history.back();
   });
 }
 
-const openState = () => document.querySelector('[data-testid="open"]')?.textContent;
-const errorText = () => document.querySelector('[data-testid="error"]')?.textContent;
-
+/** /start -> /other -> /editor, so one Back reaches /other and two reach
+ *  /start. */
 async function openEditor() {
+  await click("open other");
   await click("open editor");
   expect(window.location.pathname).toBe("/editor");
 }
 
+const openState = () => document.querySelector('[data-testid="open"]')?.textContent;
+const errorText = () => document.querySelector('[data-testid="error"]')?.textContent;
+const editorMounted = () => document.querySelector('[data-testid="editor"]') !== null;
+
 describe("useLeaveConfirm browser Back", () => {
   beforeEach(() => {
-    window.history.replaceState(null, "", "/other");
+    window.history.replaceState(null, "", "/start");
   });
 
   afterEach(async () => {
@@ -116,15 +133,59 @@ describe("useLeaveConfirm browser Back", () => {
     document.body.innerHTML = "";
   });
 
-  it("keeps the dirty editor mounted and opens the dialog", async () => {
+  it("keeps the dirty editor mounted, opens the dialog, and keeps the destination after Stay", async () => {
     await mount(true);
     await openEditor();
 
     await pressBack();
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/editor");
+      expect(editorMounted()).toBe(true);
+      expect(openState()).toBe("open");
+    });
 
-    expect(window.location.pathname).toBe("/editor");
-    expect(document.querySelector('[data-testid="editor"]')).not.toBeNull();
-    expect(openState()).toBe("open");
+    // Stay, then leave for real: the destination entry is still there.
+    await click("stay");
+    expect(openState()).toBe("closed");
+
+    await pressBack();
+    await waitFor(() => expect(openState()).toBe("open"));
+
+    await click("discard");
+    await waitFor(() => expect(window.location.pathname).toBe("/other"));
+    expect(document.querySelector('[data-testid="other"]')).not.toBeNull();
+  });
+
+  it("survives a burst of Back presses without losing the destination", async () => {
+    await mount(true);
+    await openEditor();
+
+    // Both presses are queued before the guard answers the first one; the
+    // restore re-enters the editor entry, so the second traversal lands on
+    // the same destination instead of skipping past it.
+    await pressBack(2);
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/editor");
+      expect(openState()).toBe("open");
+    });
+
+    await click("discard");
+    await waitFor(() => expect(window.location.pathname).toBe("/other"));
+    expect(document.querySelector('[data-testid="other"]')).not.toBeNull();
+  });
+
+  it("lands on the destination after Save & Leave", async () => {
+    await mount(true);
+    await openEditor();
+
+    await pressBack();
+    await waitFor(() => expect(openState()).toBe("open"));
+
+    await click("save-and-leave");
+    await waitFor(() => expect(window.location.pathname).toBe("/other"));
+
+    expect(document.querySelector('[data-testid="other"]')).not.toBeNull();
+    expect(editorMounted()).toBe(false);
   });
 
   it("lets a clean editor navigate away", async () => {
@@ -132,10 +193,10 @@ describe("useLeaveConfirm browser Back", () => {
     await openEditor();
 
     await pressBack();
+    await waitFor(() => expect(window.location.pathname).toBe("/other"));
 
-    expect(window.location.pathname).toBe("/other");
     expect(document.querySelector('[data-testid="other"]')).not.toBeNull();
-    expect(document.querySelector('[data-testid="editor"]')).toBeNull();
+    expect(editorMounted()).toBe(false);
   });
 
   it("keeps the dialog open and shows why the save failed", async () => {
@@ -143,16 +204,15 @@ describe("useLeaveConfirm browser Back", () => {
     await openEditor();
 
     await pressBack();
-    expect(openState()).toBe("open");
+    await waitFor(() => expect(openState()).toBe("open"));
 
     await click("save-and-leave");
+    await waitFor(() => expect(errorText()).toContain("Saving failed"));
 
     expect(openState()).toBe("open");
-    expect(errorText()).toContain("Saving failed");
     expect(window.location.pathname).toBe("/editor");
-    expect(document.querySelector('[data-testid="editor"]')).not.toBeNull();
+    expect(editorMounted()).toBe(true);
 
-    // Closing the dialog clears the message for the next attempt.
     await click("stay");
     expect(openState()).toBe("closed");
     expect(errorText()).toBe("");

@@ -54,6 +54,7 @@ import { EditorErrorState, EditorLoadingState, EditorSuspense } from "./EditorCh
 import { EditorHeader } from "./EditorHeader";
 import { EditorOverlays } from "./EditorOverlays";
 import type { EditorHeaderBridge, RenderEditorHeader } from "./editorHeaderBridge";
+import { lastLoadedId, saveTarget } from "./saveTarget";
 
 const DrawioEditor = lazy(() => import("./DrawioEditor"));
 const ExcalidrawEditor = lazy(() => import("./ExcalidrawEditor"));
@@ -73,16 +74,11 @@ export function EditorPage() {
   const [loaded, setLoaded] = useState<LoadedFile | null>(null);
   const loadedRef = useRef(loaded);
   loadedRef.current = loaded;
-  // A save's PUT can resolve after the user moved to another file (the
-  // editor routes reuse this component). Writes stop once the page is
-  // gone so a late save can't land in the wrong working copy.
-  const aliveRef = useRef(true);
-  useEffect(() => {
-    aliveRef.current = true;
-    return () => {
-      aliveRef.current = false;
-    };
-  }, []);
+  // Sticky id of the last real working copy. It survives the loading-state
+  // render and this page's cleanup (both run before the editor's unmount
+  // flush), which is when `loaded` is already null.
+  const targetRef = useRef<string | null>(null);
+  targetRef.current = lastLoadedId(targetRef.current, loaded);
   // Set when the save lifecycle hit a 409 and re-fetched: shows the
   // non-blocking conflict banner in the header.
   const [conflict, setConflict] = useState(false);
@@ -181,8 +177,7 @@ export function EditorPage() {
   // names the file (see `save`); the route param may already be the next
   // file when this runs.
   const reload = useCallback(async () => {
-    const target = loadedRef.current?.meta.id ?? null;
-    if (!target) throw new Error("No active file to reload.");
+    const target = saveTarget(targetRef.current);
     const ls = await qc.fetchQuery({
       queryKey: keys.files.detail(target),
       queryFn: () => files.load(target),
@@ -203,8 +198,7 @@ export function EditorPage() {
       // working copy, not the route param: on A→B this closure is already
       // B while the editor still shows A, and a flush would overwrite B
       // with A's scene when the versions happen to match.
-      const target = loadedRef.current?.meta.id ?? null;
-      if (!aliveRef.current || !target) return { version };
+      const target = saveTarget(targetRef.current);
       const m = await files.save(target, version, blob);
       const prev = loadedRef.current;
       // The PUT succeeded, but the working copy may have moved on. Writing
@@ -247,7 +241,12 @@ export function EditorPage() {
     [qc],
   );
 
-  const saveThumb = useCallback((svg: string) => files.putThumb(id, svg), [id]);
+  const saveThumb = useCallback(async (svg: string) => {
+    // Thumbnails follow the same working copy as the save, not the route.
+    const target = targetRef.current;
+    if (!target) return;
+    await files.putThumb(target, svg);
+  }, []);
 
   // After a thumb upload, the server's `thumb_updated_at` advances.
   // Explorer cards build their `<img src>` from it, so list queries must

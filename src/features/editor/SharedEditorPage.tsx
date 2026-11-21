@@ -25,6 +25,7 @@ import { EditorErrorState, EditorLoadingState, EditorSuspense } from "./EditorCh
 import { EditorHeader } from "./EditorHeader";
 import type { RenderEditorHeader } from "./editorHeaderBridge";
 import { SharedStaticSitePreviewRedirect } from "./StaticSitePreviewRedirect";
+import { lastLoadedId, saveTarget } from "./saveTarget";
 
 const DrawioEditor = lazy(() => import("@/features/editor/DrawioEditor"));
 const ExcalidrawEditor = lazy(() => import("@/features/editor/ExcalidrawEditor"));
@@ -58,25 +59,18 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
     if (fileQuery.data) setLoaded(fileQuery.data);
   }, [fileQuery.data, loaded]);
 
-  // A save can resolve after the visitor moved to another shared file;
-  // stop writing once this page is gone.
-  const aliveRef = useRef(true);
-  useEffect(() => {
-    aliveRef.current = true;
-    return () => {
-      aliveRef.current = false;
-    };
-  }, []);
-
   const loadedRef = useRef(loaded);
   loadedRef.current = loaded;
+  // Sticky id of the last real working copy (see `saveTarget`): the route
+  // param and `loaded` are both unreliable when the unmount flush runs.
+  const targetRef = useRef<string | null>(null);
+  targetRef.current = lastLoadedId(targetRef.current, loaded);
 
   // Force-fresh reload after a 409 conflict. The working copy names the
   // file (see `save`); a folder-share route param may already be the next
   // file when this runs, so the fetch and the cache key follow `target`.
   const reload = useCallback(async () => {
-    const target = loadedRef.current?.meta.id ?? null;
-    if (!target) throw new Error("No active file to reload.");
+    const target = saveTarget(targetRef.current);
     const cacheKey = fileId ? keys.publicShare.token(token, target) : keys.publicShare.token(token);
     const ls = await qc.fetchQuery({
       queryKey: cacheKey,
@@ -95,8 +89,7 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
       // Write the file the visitor actually has open, not the route param:
       // on A→B this closure may already be B while the working copy (and
       // the scene) is still A.
-      const target = loadedRef.current?.meta.id ?? null;
-      if (!aliveRef.current || !target) return { version };
+      const target = saveTarget(targetRef.current);
       const m = fileId
         ? await shares.saveFolderFile(token, target, version, blob)
         : await shares.save(token, version, blob);
