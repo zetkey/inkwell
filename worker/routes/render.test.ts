@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { assetSecurityHeaders } from "./render";
+import type { StaticSiteFileBlob } from "../types";
+import { assetSecurityHeaders, resolveAssetPath } from "./render";
 
 describe("static-site asset headers", () => {
   it("sandboxes the document so it has an opaque origin (no app cookie access)", () => {
@@ -25,5 +26,35 @@ describe("static-site asset headers", () => {
     expect(headers.get("x-content-type-options")).toBe("nosniff");
     expect(headers.get("content-type")).toBe("text/html");
     expect(headers.get("content-security-policy")).toContain("frame-ancestors 'self'");
+  });
+});
+
+const manifest: StaticSiteFileBlob = {
+  kind: "static-site",
+  entry: "index.html",
+  assets: [
+    { path: "index.html", size: 1, contentType: "text/html", updatedAt: 0 },
+    { path: "dir/index.html", size: 1, contentType: "text/html", updatedAt: 0 },
+  ],
+};
+
+describe("resolveAssetPath", () => {
+  it("serves the entry for the root request", () => {
+    expect(resolveAssetPath(manifest, "")).toEqual({
+      path: "index.html",
+      contentType: "text/html",
+    });
+  });
+
+  it("resolves a directory request to its index.html", () => {
+    expect(resolveAssetPath(manifest, "dir/")).toEqual({
+      path: "dir/index.html",
+      contentType: "text/html",
+    });
+  });
+
+  it("returns null for an unknown or traversing path", () => {
+    expect(resolveAssetPath(manifest, "..")).toBeNull();
+    expect(resolveAssetPath(manifest, "dir/../../index.html")).toBeNull();
   });
 });

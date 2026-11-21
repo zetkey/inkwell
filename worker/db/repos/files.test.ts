@@ -1,40 +1,9 @@
 /// <reference types="node" />
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it } from "vitest";
+import { sqliteD1 } from "../../test-support/sqlite-d1";
 import type { Env } from "../../types";
 import { claimVersion } from "./files";
-
-// `claimVersion` is one conditional UPDATE, so its concurrency contract
-// is SQL semantics: two claims against the same version, one wins.
-// Exercise the real SQL against in-memory SQLite through a tiny
-// D1-compatible binding instead of asserting on drizzle's output.
-function d1(db: DatabaseSync): D1Database {
-  return {
-    prepare(sql: string) {
-      return {
-        bind(...params: unknown[]) {
-          return {
-            async all() {
-              return { results: db.prepare(sql).all(...(params as SQLInputValue[])) };
-            },
-            async run() {
-              const result = db.prepare(sql).run(...(params as SQLInputValue[]));
-              return { success: true, meta: { changes: Number(result.changes) } };
-            },
-            // drizzle's typed `.get()` path goes through `.raw()`.
-            async raw() {
-              const stmt = db.prepare(sql);
-              const names = stmt.columns().map((c) => c.name);
-              return stmt
-                .all(...(params as SQLInputValue[]))
-                .map((row) => names.map((name) => row[name]));
-            },
-          };
-        },
-      };
-    },
-  } as unknown as D1Database;
-}
 
 let db: DatabaseSync;
 let env: Env;
@@ -53,7 +22,7 @@ beforeEach(() => {
   db.exec(
     "INSERT INTO files (id, owner, version, size_bytes, updated_at) VALUES ('f1', 'u1', 3, 100, 1)",
   );
-  env = { DB: d1(db) } as unknown as Env;
+  env = { DB: sqliteD1(db) } as unknown as Env;
 });
 
 function read(column: string): unknown {

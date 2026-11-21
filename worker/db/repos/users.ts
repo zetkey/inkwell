@@ -99,6 +99,16 @@ export async function insert(env: Env, row: UserRow): Promise<void> {
   await db.insert(t.users).values(row).run();
 }
 
+/** Insert unless a row with the same email already exists. Returns true
+ *  when this call created the row, false when it lost the race — the
+ *  bootstrap login uses that to read the winner's row instead of
+ *  surfacing a UNIQUE violation. */
+export async function insertIfAbsent(env: Env, row: UserRow): Promise<boolean> {
+  const db = getDb(env);
+  const result = await db.insert(t.users).values(row).onConflictDoNothing().run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
 export async function update(env: Env, id: string, patch: Partial<UserRow>): Promise<void> {
   const db = getDb(env);
   await db.update(t.users).set(patch).where(eq(t.users.id, id)).run();

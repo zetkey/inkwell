@@ -53,6 +53,16 @@ export const users = sqliteTable(
   ],
 );
 
+// ─── login_attempts ───────────────────────────────────────────────────
+// Per-key failure counter for the login route. `key` is `email|ip`; a row
+// is deleted on a successful login and its window (`reset_at`) restarts
+// after a lapse, so the table only holds keys that recently failed.
+export const login_attempts = sqliteTable("login_attempts", {
+  key: text("key").primaryKey(),
+  fails: integer("fails").notNull().default(0),
+  reset_at: integer("reset_at").notNull(),
+});
+
 // ─── invites ──────────────────────────────────────────────────────────
 // Single-use, optionally-expiring registration tokens. `created_by` cascades
 // so deleting a user cleans up their invites; `used_by_user_id` is set-null

@@ -137,7 +137,7 @@ r.post("/:token/accept", async (c) => {
   }
 
   user.last_login_at = await usersRepo.bumpLastLogin(c.env, user.id);
-  const cookie = await createSessionCookie(c.env, user.id);
+  const cookie = await createSessionCookie(c.env, user);
   return jsonResponse(
     {
       id: user.id,

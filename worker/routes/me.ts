@@ -1,7 +1,7 @@
 // Authenticated /api/me + /api/me/password.
 
 import { Hono } from "hono";
-import { changeOwnPassword } from "../auth";
+import { changeOwnPassword, createSessionCookie } from "../auth";
 import * as usersRepo from "../db/repos/users";
 import { errorResponse, jsonResponse } from "../lib/responses";
 import { requireSession } from "../middleware/auth";
@@ -45,7 +45,17 @@ r.post("/password", async (c) => {
     body.currentPassword || "",
     body.newPassword || "",
   );
-  if (result.ok) return jsonResponse({ ok: true });
+  if (result.ok) {
+    // The new hash invalidates every older cookie (see
+    // `sessionHashPrefix`); re-mint this session's so the caller that
+    // just changed their password stays signed in.
+    const row = await usersRepo.findById(c.env, session.userId);
+    if (!row) return jsonResponse({ ok: true });
+    return jsonResponse(
+      { ok: true },
+      { headers: { "set-cookie": await createSessionCookie(c.env, row) } },
+    );
+  }
   if (result.reason === "weak") {
     return errorResponse(400, "new password must be at least 8 characters");
   }

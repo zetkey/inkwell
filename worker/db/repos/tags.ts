@@ -133,6 +133,14 @@ export async function collectForMany(
   return out;
 }
 
+/** Ids in `candidates` that may be garbage-collected: everything except
+ *  the tags this request is using. Pure so the "never delete a tag I just
+ *  attached" rule is testable on its own. */
+export function orphanTagIds(candidates: readonly string[], keep: readonly string[]): string[] {
+  const keepIds = new Set(keep);
+  return candidates.filter((id) => !keepIds.has(id));
+}
+
 // ─── Writes ──────────────────────────────────────────────────────────
 // Replaces the tag set on a target, creating any missing tag rows.
 // Returns the (normalized) tag list now attached to the target.
@@ -166,6 +174,21 @@ export async function replaceForEntity(
     }
   }
 
+  // Candidates for GC are read up front, then narrowed by this request's
+  // own tag ids. A concurrent request may be holding a tag row it created
+  // but has not attached yet; without the `keep` set our delete could
+  // remove it and make its insert fail. The batch's `NOT EXISTS` re-check
+  // still protects tags attached elsewhere.
+  const ownerTagIds = await db
+    .select({ id: t.tags.id })
+    .from(t.tags)
+    .where(eq(t.tags.owner, owner))
+    .all();
+  const doomed = orphanTagIds(
+    ownerTagIds.map((r) => r.id),
+    tagIds,
+  );
+
   // Replace the tagging set + GC orphan tags atomically. D1 batches run
   // in an implicit transaction, so this closes the delete-then-insert
   // race the previous implementation had.
@@ -190,7 +213,8 @@ export async function replaceForEntity(
     .where(
       and(
         eq(t.tags.owner, owner),
-        sql`${t.tags.id} NOT IN (SELECT DISTINCT ${t.taggings.tag_id} FROM ${t.taggings} WHERE ${t.taggings.owner} = ${owner})`,
+        inIds(t.tags.id, doomed),
+        sql`NOT EXISTS (SELECT 1 FROM ${t.taggings} WHERE ${t.taggings.tag_id} = ${t.tags.id})`,
       ),
     );
   await db.batch([head, ...inserts, gc]);

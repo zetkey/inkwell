@@ -18,7 +18,7 @@ import {
   errorResponse,
   jsonResponse,
   r2ThumbKey,
-  serveR2WithCache,
+  serveThumb,
   streamFileResponse,
 } from "../lib/responses";
 import { parseJsonOrEmpty } from "../middleware/body";
@@ -71,7 +71,7 @@ r.get(
     const tk = c.get("share");
     const file = await filesRepo.findByIdAnyOwner(c.env, tk.target_id);
     if (!file?.has_thumb) return errorResponse(404, "no thumbnail");
-    return await serveR2WithCache(c.env, c.executionCtx ?? null, c.req.raw, r2ThumbKey(file.id));
+    return await serveThumb(c.env, r2ThumbKey(file.id));
   },
 );
 
@@ -264,7 +264,7 @@ r.get("/:token/files/:fileId/thumb", requireShareToken(), async (c) => {
   }
   const file = await filesRepo.findByIdAnyOwner(c.env, fileId);
   if (!file?.has_thumb) return errorResponse(404, "no thumbnail");
-  return await serveR2WithCache(c.env, c.executionCtx ?? null, c.req.raw, r2ThumbKey(file.id));
+  return await serveThumb(c.env, r2ThumbKey(file.id));
 });
 
 r.get("/:token/files/:fileId/download", requireShareToken(), async (c) => {

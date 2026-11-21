@@ -245,7 +245,7 @@ export function assetSecurityHeaders(contentType: string): Headers {
  *  by exact Map key, never by file-system path. The HMAC gate before
  *  this function is the real defense in depth.
  */
-function resolveAssetPath(
+export function resolveAssetPath(
   manifest: StaticSiteFileBlob,
   relpath: string,
 ): { path: string; contentType: string } | null {

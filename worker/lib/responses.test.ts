@@ -1,7 +1,7 @@
 import { unzipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import type { FileRow } from "../types";
-import { MAX_SITE_ZIP_BYTES, streamFileResponse } from "./responses";
+import { MAX_SITE_ZIP_BYTES, serveThumb, streamFileResponse } from "./responses";
 
 const blob = {
   elements: [{ id: "el1", type: "rectangle", x: 0, y: 0 }],
@@ -44,7 +44,9 @@ describe("streamFileResponse downloads", () => {
     const res = await streamFileResponse(envWith(stored), row(), { download: true });
 
     expect(res.status).toBe(200);
-    expect(res.headers.get("content-disposition")).toBe('attachment; filename="Sketch.excalidraw"');
+    const disposition = res.headers.get("content-disposition") ?? "";
+    expect(disposition).toContain('attachment; filename="Sketch.excalidraw"');
+    expect(disposition).toContain("filename*=UTF-8''Sketch.excalidraw");
     const body = await res.json();
     expect(body).toEqual({
       type: "excalidraw",
@@ -124,7 +126,9 @@ describe("streamFileResponse static-site ZIP", () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("application/zip");
-    expect(res.headers.get("content-disposition")).toBe('attachment; filename="Sketch.zip"');
+    const disposition = res.headers.get("content-disposition") ?? "";
+    expect(disposition).toContain('attachment; filename="Sketch.zip"');
+    expect(disposition).toContain("filename*=UTF-8''Sketch.zip");
     const zipped = unzipSync(new Uint8Array(await res.arrayBuffer()));
     expect(Object.keys(zipped).sort()).toEqual(["index.html", "style.css"]);
     expect(new TextDecoder().decode(zipped["index.html"])).toBe("<h1>hi</h1>");
@@ -143,5 +147,37 @@ describe("streamFileResponse static-site ZIP", () => {
 
     expect(res.status).toBe(413);
     expect(reads).toEqual(["scenes/file-1.json"]);
+  });
+});
+
+describe("download filename encoding", () => {
+  it("carries non-ASCII names in filename* with an ASCII fallback", async () => {
+    const name = "Résumé / draft";
+    const res = await streamFileResponse(envWith(JSON.stringify(blob)), row({ name }), {
+      download: true,
+    });
+
+    const disposition = res.headers.get("content-disposition") ?? "";
+    expect(disposition).toContain('filename="R_sum_ _ draft.excalidraw"');
+    expect(disposition).toContain(`filename*=UTF-8''${encodeURIComponent(`${name}.excalidraw`)}`);
+  });
+});
+
+describe("serveThumb", () => {
+  it("serves the SVG with a script-less CSP and nosniff", async () => {
+    const svg = new TextEncoder().encode("<svg xmlns='http://www.w3.org/2000/svg'/>");
+    const env = {
+      R2: { get: async () => ({ body: svg, httpEtag: '"abc"' }) },
+    } as unknown as { R2: R2Bucket };
+
+    const res = await serveThumb(env, "thumbs/file-1.svg");
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/svg+xml; charset=utf-8");
+    expect(res.headers.get("content-security-policy")).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'",
+    );
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("etag")).toBe('"abc"');
   });
 });

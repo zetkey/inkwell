@@ -12,7 +12,6 @@
 // should send `If-Match: <version>`; mismatch returns 409 with the
 // current row.
 
-import { unzipSync } from "fflate";
 import { Hono } from "hono";
 import * as filesRepo from "../db/repos/files";
 import * as foldersRepo from "../db/repos/folders";
@@ -24,7 +23,7 @@ import {
   jsonResponse,
   r2FileKey,
   r2ThumbKey,
-  serveR2WithCache,
+  serveThumb,
   streamFileResponse,
 } from "../lib/responses";
 import { now } from "../lib/util";
@@ -54,6 +53,7 @@ import {
   type PendingAsset,
   readManifest,
   StaticSiteError,
+  unzipSite,
   validateAssetPath,
   writePendingAssets,
 } from "../services/static-site";
@@ -396,7 +396,7 @@ r.get("/:id/thumb", async (c) => {
   const id = c.req.param("id");
   const row = await filesRepo.findById(c.env, owner, id);
   if (!row) return errorResponse(404, "file not found");
-  return await serveR2WithCache(c.env, c.executionCtx ?? null, c.req.raw, r2ThumbKey(id));
+  return await serveThumb(c.env, r2ThumbKey(id));
 });
 
 // ─── Static-site asset endpoints ────────────────────────────────────
@@ -575,8 +575,9 @@ r.post("/:id/assets/zip", async (c) => {
 
   let raw: Record<string, Uint8Array>;
   try {
-    raw = unzipSync(new Uint8Array(buf));
-  } catch {
+    raw = unzipSite(new Uint8Array(buf));
+  } catch (e) {
+    if (e instanceof StaticSiteError) return errorResponse(e.status, e.message);
     return errorResponse(400, "invalid ZIP");
   }
 

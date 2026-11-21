@@ -17,6 +17,7 @@
 // Direct PUTs of the manifest are rejected in `putFileBlob` — owners
 // mutate via the asset endpoints, which call into here.
 
+import { unzipSync } from "fflate";
 import * as filesRepo from "../db/repos/files";
 import { r2FileKey } from "../lib/responses";
 import { now } from "../lib/util";
@@ -25,12 +26,15 @@ import type { Env, FileRow, StaticSiteAsset, StaticSiteFileBlob } from "../types
 // ─── Caps ───────────────────────────────────────────────────────────
 /** Single-asset upload cap. Matches existing `MAX_FILE_BYTES`. */
 export const MAX_SITE_ASSET_BYTES = 25 * 1024 * 1024;
-/** Whole-site total cap (sum across all assets). */
-export const MAX_SITE_TOTAL_BYTES = 100 * 1024 * 1024;
+/** Whole-site total cap (sum across all assets, uncompressed). */
+export const MAX_SITE_TOTAL_BYTES = 25 * 1024 * 1024;
 /** Maximum number of assets per site. */
 export const MAX_SITE_ASSET_COUNT = 500;
 /** Per-segment and full-path string caps. */
 export const MAX_ASSET_PATH_BYTES = 1000;
+
+// `lib/responses.ts#MAX_SITE_ZIP_BYTES` (the single-ZIP download cap) must
+// stay below `MAX_SITE_TOTAL_BYTES`; a test asserts that.
 
 // ─── Path validation ────────────────────────────────────────────────
 //
@@ -74,6 +78,37 @@ export function findPathPrefixCollision(paths: string[]): string | null {
     }
   }
   return null;
+}
+
+// ─── ZIP intake ─────────────────────────────────────────────────────
+/** Inflate an uploaded site ZIP with a pre-inflation size guard.
+ *
+ *  Each entry's header declares its uncompressed size, so the filter can
+ *  reject a zip bomb before fflate allocates anything for it — the route's
+ *  `content-length` check only sees compressed bytes. Throwing from the
+ *  filter aborts the whole extraction. */
+export function unzipSite(buf: Uint8Array): Record<string, Uint8Array> {
+  let total = 0;
+  try {
+    return unzipSync(buf, {
+      filter: (file) => {
+        if (file.originalSize > MAX_SITE_ASSET_BYTES) {
+          throw new StaticSiteError(
+            413,
+            `asset "${file.name}" exceeds ${MAX_SITE_ASSET_BYTES} bytes`,
+          );
+        }
+        total += file.originalSize;
+        if (total > MAX_SITE_TOTAL_BYTES) {
+          throw new StaticSiteError(413, `uncompressed site exceeds ${MAX_SITE_TOTAL_BYTES} bytes`);
+        }
+        return true;
+      },
+    });
+  } catch (e) {
+    if (e instanceof StaticSiteError) throw e;
+    throw new StaticSiteError(400, "invalid ZIP");
+  }
 }
 
 // ─── Content-type map ───────────────────────────────────────────────

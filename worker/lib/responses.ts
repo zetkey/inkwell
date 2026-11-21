@@ -31,42 +31,33 @@ export function errorResponse(status: number, message: string): Response {
   return jsonResponse({ error: message }, { status });
 }
 
-// ─── R2-cached thumbnails ─────────────────────────────────────────────
+// ─── Thumbnails ───────────────────────────────────────────────────────
 // Used by both the owner endpoint (`/api/files/:id/thumb`) and the
 // share-token endpoints (`/api/share/:token/thumb`,
 // `/api/share/:token/files/:fileId/thumb`).
 //
-// Cache key is the request URL only (no per-user partitioning), which
-// is safe because:
-//   1. The auth gate (or share-token resolution) runs upstream — only
-//      authenticated/token-valid callers ever reach this helper.
-//   2. File IDs are unguessable.
-// Pre-existing soft leak (no owner check on owner-side thumbs) is
-// documented for follow-up; this caching layer doesn't make it worse.
-export async function serveR2WithCache(
-  env: { R2: R2Bucket },
-  ctx: { waitUntil(promise: Promise<unknown>): void } | null,
-  req: Request | null,
-  key: string,
-): Promise<Response> {
-  const cache = caches.default;
-  if (req) {
-    const cached = await cache.match(req);
-    if (cached) return cached;
-  }
+// No `caches.default` here: the responses are `private`, so the Workers
+// cache never stored them (and `cache.put` was dead weight). The
+// content-addressed URL (`?v=<thumbUpdatedAt>`) is what makes browser
+// caching safe.
+//
+// Thumbnails are SVG rendered from user content, so they are served as a
+// document with script disabled (`default-src 'none'`): an SVG opened in
+// a new tab can't run anything.
+export async function serveThumb(env: { R2: R2Bucket }, key: string): Promise<Response> {
   const obj = await env.R2.get(key);
   if (!obj) return errorResponse(404, "no thumbnail");
-  const resp = new Response(obj.body, {
+  return new Response(obj.body, {
     headers: {
       "content-type": "image/svg+xml; charset=utf-8",
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'",
+      "x-content-type-options": "nosniff",
       // Content-addressed URL (`?v=<thumbUpdatedAt>`) ⇒ a given URL
       // never changes content. Safe to mark immutable.
       "cache-control": "private, max-age=31536000, immutable",
       etag: obj.httpEtag,
     },
   });
-  if (req && ctx) ctx.waitUntil(cache.put(req, resp.clone()));
-  return resp;
 }
 
 // ─── File blob streaming ─────────────────────────────────────────────
@@ -113,7 +104,7 @@ export async function streamFileResponse(
         parsed.format === "markdown-v1" &&
         typeof parsed.source === "string"
       ) {
-        headers["content-disposition"] = `attachment; filename="${safeFilename(row.name)}.md"`;
+        headers["content-disposition"] = attachmentDisposition(`${row.name}.md`);
         headers["content-type"] = "text/markdown; charset=utf-8";
         return new Response(parsed.source, { headers });
       }
@@ -122,12 +113,12 @@ export async function streamFileResponse(
       }
       // Legacy BlockNote documents remain JSON until the browser has
       // converted and saved them as canonical Markdown.
-      headers["content-disposition"] =
-        `attachment; filename="${safeFilename(row.name)}.notes.json"`;
+      headers["content-disposition"] = attachmentDisposition(`${row.name}.notes.json`);
       return new Response(JSON.stringify(parsed), { headers });
     }
-    headers["content-disposition"] =
-      `attachment; filename="${safeFilename(row.name)}.${downloadExtensionForKind(row.kind)}"`;
+    headers["content-disposition"] = attachmentDisposition(
+      `${row.name}.${downloadExtensionForKind(row.kind)}`,
+    );
     if (row.kind === "excalidraw") {
       // Storage is envelope-free (the editor round-trips
       // `{elements, appState, files}`), but a `.excalidraw` file must
@@ -199,6 +190,21 @@ export function r2FileKey(id: string): string {
 }
 export function r2ThumbKey(id: string): string {
   return `thumbs/${id}.svg`;
+}
+
+/** `Content-Disposition` for a download. The ASCII `filename` stays as
+ *  the sanitized fallback; `filename*` (RFC 5987) carries the real name,
+ *  so non-ASCII titles survive in modern browsers. */
+function attachmentDisposition(filename: string): string {
+  // The plain `filename` stays ASCII-only: header values are latin-1-ish
+  // in old clients, so non-ASCII characters become "_" there and the real
+  // name rides in `filename*`.
+  const ascii = safeFilename(filename).replace(/[^\x20-\x7E]/g, "_");
+  const encoded = encodeURIComponent(filename).replace(
+    /['()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }
 
 function safeFilename(name: string): string {

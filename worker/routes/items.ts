@@ -20,7 +20,7 @@ import { inIds } from "../db/filters";
 import * as foldersRepo from "../db/repos/folders";
 import { MAX_DEPTH } from "../db/repos/folders";
 import { checkFolderMove, dedupeByAncestor, type ItemRef, MAX_BULK_ITEMS } from "../lib/items";
-import { errorResponse, jsonResponse } from "../lib/responses";
+import { errorResponse, jsonResponse, r2FileKey } from "../lib/responses";
 import { now } from "../lib/util";
 import { requireSession } from "../middleware/auth";
 import type { AppEnv } from "../middleware/types";
@@ -218,6 +218,17 @@ r.post("/restore", async (c) => {
   const resolved = await resolveRefs(c.env, owner, body.items, "trash-top");
   if (resolved instanceof Response) return resolved;
   const refs = uniqueRefs(body.items);
+  // Trash keeps the D1 row while the R2 blob can already be gone (purge
+  // races, manual cleanup). Restoring such a file would hand the editor an
+  // empty document, so refuse the whole batch up front.
+  for (const ref of refs) {
+    if (ref.type !== "file") continue;
+    const blob = await c.env.R2.head(r2FileKey(ref.id));
+    if (!blob) {
+      const name = resolved.files.get(ref.id)?.name ?? ref.id;
+      return errorResponse(409, `cannot restore "${name}": file content is missing from storage`);
+    }
+  }
   const parents = new Map<string, string | null>();
   for (const ref of refs) {
     parents.set(

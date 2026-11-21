@@ -32,9 +32,24 @@ export interface Session {
 }
 
 // ─── Cookie helpers ───────────────────────────────────────────────────
-export async function createSessionCookie(env: Env, userId: string): Promise<string> {
+/** Short, non-secret fingerprint of the stored password hash.
+ *
+ *  Rotating the password re-derives the hash (fresh salt), so this prefix
+ *  changes with it. Cookies minted before the change stop matching in
+ *  `validateSession` — that is what makes a password change revoke every
+ *  existing session without a session table. */
+export function sessionHashPrefix(passwordHash: string): string {
+  const parts = passwordHash.split("$");
+  const digest = parts.length === 5 ? parts[4] : passwordHash;
+  return digest.slice(0, 8);
+}
+
+export async function createSessionCookie(
+  env: Env,
+  user: Pick<UserRow, "id" | "password_hash">,
+): Promise<string> {
   const expiresAt = Date.now() + SESSION_TTL_MS;
-  const payload = `${userId}.${expiresAt}`;
+  const payload = `${user.id}.${expiresAt}.${sessionHashPrefix(user.password_hash)}`;
   const sig = await hmacSha256(env.SESSION_SECRET, payload);
   const value = `${payload}.${sig}`;
   return `${COOKIE_NAME}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(
@@ -47,8 +62,8 @@ export function clearSessionCookie(): string {
 }
 
 // Parses, verifies HMAC + expiry, then loads the user row. Returns null if
-// the cookie is missing, tampered, expired, or refers to a missing/disabled
-// user.
+// the cookie is missing, tampered, expired, refers to a missing/disabled
+// user, or was minted against a password hash that has since changed.
 export async function validateSession(req: Request, env: Env): Promise<Session | null> {
   const cookie = req.headers.get("cookie") || "";
   const match = cookie.match(new RegExp(`(?:^|;\\s*)${COOKIE_NAME}=([^;]+)`));
@@ -63,13 +78,14 @@ export async function validateSession(req: Request, env: Env): Promise<Session |
   const expected = await hmacSha256(env.SESSION_SECRET, payload);
   if (!timingSafeEqual(sig, expected)) return null;
 
-  const [userId, expiresAtStr] = payload.split(".");
+  const [userId, expiresAtStr, hashPrefix] = payload.split(".");
   const expiresAt = Number(expiresAtStr);
   if (!Number.isFinite(expiresAt) || expiresAt < Date.now()) return null;
-  if (!userId) return null;
+  if (!userId || !hashPrefix) return null;
 
   const user = await usersRepo.findById(env, userId);
   if (!user || user.disabled) return null;
+  if (!timingSafeEqual(hashPrefix, sessionHashPrefix(user.password_hash))) return null;
 
   return {
     userId: user.id,
@@ -102,25 +118,32 @@ export async function loginWithPassword(
   const email = rawEmail.trim().toLowerCase();
   if (!email || !password) return { ok: false, reason: "invalid" };
 
+  const isBootstrapEmail =
+    !!env.SUPER_ADMIN_EMAIL && email === env.SUPER_ADMIN_EMAIL.trim().toLowerCase();
+
+  let user = await usersRepo.findByEmail(env, email);
   // Bootstrap super-admin on demand.
-  if (env.SUPER_ADMIN_EMAIL && email === env.SUPER_ADMIN_EMAIL.trim().toLowerCase()) {
-    const existing = await usersRepo.findByEmail(env, email);
-    if (!existing) {
-      if (!env.SUPER_ADMIN_PASSWORD) {
-        return { ok: false, reason: "misconfigured" };
-      }
-      // The supplied password must match SUPER_ADMIN_PASSWORD to claim the
-      // super-admin slot. We don't fall back to "create with whatever they
-      // typed" because that would let any caller mint the first admin.
-      if (password !== env.SUPER_ADMIN_PASSWORD) {
-        return { ok: false, reason: "invalid" };
-      }
-      const created = await createSuperAdmin(env, email, password);
-      return { ok: true, user: created };
+  if (!user && isBootstrapEmail) {
+    if (!env.SUPER_ADMIN_PASSWORD) {
+      return { ok: false, reason: "misconfigured" };
     }
+    // The supplied password must match SUPER_ADMIN_PASSWORD to claim the
+    // super-admin slot. We don't fall back to "create with whatever they
+    // typed" because that would let any caller mint the first admin.
+    if (!timingSafeEqual(password, env.SUPER_ADMIN_PASSWORD)) {
+      return { ok: false, reason: "invalid" };
+    }
+    const candidate = await buildSuperAdmin(email, password);
+    // Two first-run logins can race: `insertIfAbsent` lets exactly one
+    // insert win and the other fall through to the winner's row instead
+    // of blowing up on a UNIQUE violation.
+    if (await usersRepo.insertIfAbsent(env, candidate)) {
+      return { ok: true, user: candidate };
+    }
+    user = await usersRepo.findByEmail(env, email);
+    if (!user) return { ok: false, reason: "invalid" };
   }
 
-  const user = await usersRepo.findByEmail(env, email);
   if (!user) return { ok: false, reason: "invalid" };
   if (user.disabled) return { ok: false, reason: "disabled" };
 
@@ -132,12 +155,11 @@ export async function loginWithPassword(
   return { ok: true, user };
 }
 
-async function createSuperAdmin(env: Env, email: string, password: string): Promise<UserRow> {
-  const id = newId();
+async function buildSuperAdmin(email: string, password: string): Promise<UserRow> {
   const ts = now();
   const hash = await hashPassword(password);
-  const row: UserRow = {
-    id,
+  return {
+    id: newId(),
     email,
     password_hash: hash,
     first_name: "Super",
@@ -148,8 +170,6 @@ async function createSuperAdmin(env: Env, email: string, password: string): Prom
     updated_at: ts,
     last_login_at: ts,
   };
-  await usersRepo.insert(env, row);
-  return row;
 }
 
 // ─── Self-service password change ─────────────────────────────────────
