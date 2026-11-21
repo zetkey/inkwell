@@ -9,20 +9,21 @@ import * as filesRepo from "../db/repos/files";
 import * as sharesRepo from "../db/repos/shares";
 import * as tagsRepo from "../db/repos/tags";
 import { newId } from "../lib/crypto";
-import { errorResponse, jsonResponse, r2FileKey } from "../lib/responses";
+import { r2FileKey } from "../lib/keys";
+import { errorResponse, jsonResponse } from "../lib/responses";
 import { assertNever, now } from "../lib/util";
-import type {
-  DrawioFileBlob,
-  Env,
-  ExcalidrawFileBlob,
-  FileBlob,
-  FileKind,
-  FileMeta,
-  FileRow,
-  NotesFileBlob,
-  StaticSiteFileBlob,
+import {
+  type Env,
+  type ExcalidrawFileBlob,
+  type FileBlob,
+  type FileKind,
+  type FileMeta,
+  type FileRow,
+  isDrawioBlob,
+  type NotesFileBlob,
+  rowToMeta,
+  type StaticSiteFileBlob,
 } from "../types";
-import { rowToMeta } from "../types";
 import { emptyManifest, isStaticSiteBlob, validateManifest, writeSeedSite } from "./static-site";
 
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
@@ -66,13 +67,6 @@ function escapeXml(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
-}
-
-export function isDrawioBlob(blob: FileBlob): blob is DrawioFileBlob {
-  return (
-    (blob as { kind?: unknown }).kind === "drawio" &&
-    typeof (blob as { xml?: unknown }).xml === "string"
-  );
 }
 
 export function isNotesBlob(blob: FileBlob): blob is NotesFileBlob {

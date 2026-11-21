@@ -27,7 +27,7 @@ import {
   MAX_BULK_ITEMS,
   subtreeIds,
 } from "../lib/items";
-import { r2FileKey, r2ThumbKey } from "../lib/responses";
+import { r2FileKey, r2StaticSitePrefix, r2ThumbKey } from "../lib/keys";
 import { now } from "../lib/util";
 import type {
   Env,
@@ -40,7 +40,6 @@ import type {
 } from "../types";
 import { rowToFolderMeta, rowToMeta } from "../types";
 import { deleteFileObjects } from "./delete-cascade";
-import { r2StaticSitePrefix } from "./static-site";
 
 type SqliteBatchItem = BatchItem<"sqlite">;
 

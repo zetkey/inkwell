@@ -125,9 +125,3 @@ export async function deleteById(env: Env, id: string): Promise<void> {
   const db = getDb(env);
   await db.delete(t.users).where(eq(t.users.id, id)).run();
 }
-
-export async function existsById(env: Env, id: string): Promise<boolean> {
-  const db = getDb(env);
-  const row = await db.select({ id: t.users.id }).from(t.users).where(eq(t.users.id, id)).get();
-  return !!row;
-}

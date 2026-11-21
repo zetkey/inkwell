@@ -190,6 +190,12 @@ fileSharesNested.delete("/:token", async (c) => {
   if (!fileId || !token) return errorResponse(404, "file not found");
   const row = await filesRepo.findById(c.env, owner, fileId);
   if (!row) return errorResponse(404, "file not found");
+  // The URL names the target, so the token must belong to it: otherwise
+  // `DELETE /api/files/A/shares/<token of B>` would revoke B's share.
+  const share = await sharesRepo.findByTokenForOwner(c.env, owner, token);
+  if (share?.target_type !== "file" || share.target_id !== fileId) {
+    return errorResponse(404, "share not found");
+  }
   const ok = await sharesRepo.revoke(c.env, owner, token);
   if (!ok) return errorResponse(404, "share not found");
   return jsonResponse({ ok: true });
@@ -230,6 +236,12 @@ folderSharesNested.delete("/:token", async (c) => {
   if (!folderId || !token) return errorResponse(404, "folder not found");
   if (!(await foldersRepo.existsForOwner(c.env, owner, folderId))) {
     return errorResponse(404, "folder not found");
+  }
+  // Same binding as the file router: revoke only a token minted for *this*
+  // folder.
+  const share = await sharesRepo.findByTokenForOwner(c.env, owner, token);
+  if (share?.target_type !== "folder" || share.target_id !== folderId) {
+    return errorResponse(404, "share not found");
   }
   const ok = await sharesRepo.revoke(c.env, owner, token);
   if (!ok) return errorResponse(404, "share not found");

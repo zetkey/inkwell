@@ -69,10 +69,11 @@ import * as filesRepo from "../db/repos/files";
 import * as foldersRepo from "../db/repos/folders";
 import * as sharesRepo from "../db/repos/shares";
 import { ownerRenderPayload, shareRenderPayload, verifyRender } from "../lib/crypto";
+import { r2StaticSiteAssetKey } from "../lib/keys";
 import { errorResponse } from "../lib/responses";
 import { requireSession } from "../middleware/auth";
 import type { AppEnv } from "../middleware/types";
-import { r2StaticSiteAssetKey, readManifest } from "../services/static-site";
+import { readManifest } from "../services/static-site";
 import type { Env, FileRow, StaticSiteFileBlob } from "../types";
 
 // ─── Owner-minted (mounted at `/sites`) ───────────────────────────

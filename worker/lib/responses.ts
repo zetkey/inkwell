@@ -7,9 +7,10 @@
 // downloads) live in one place rather than being copy-pasted.
 
 import { zipSync } from "fflate";
-import { isDrawioBlob } from "../services/file-blob";
-import { isStaticSiteBlob, r2StaticSiteAssetKey } from "../services/static-site";
+import { isStaticSiteBlob } from "../services/static-site";
 import type { ExcalidrawFileBlob, FileBlob, FileKind, FileRow } from "../types";
+import { isDrawioBlob } from "../types";
+import { r2FileKey, r2StaticSiteAssetKey } from "./keys";
 import { assertNever } from "./util";
 
 /** Total site bytes we will ZIP for a download. Store-only `zipSync`
@@ -181,16 +182,6 @@ export async function streamFileResponse(
     }
   }
   return new Response(obj.body, { headers });
-}
-
-// `scenes/` here is a historical R2 key prefix kept to avoid a blob copy
-// during the scenes → files rename. The function name reflects the
-// product vocabulary; the storage layout is unchanged.
-export function r2FileKey(id: string): string {
-  return `scenes/${id}.json`;
-}
-export function r2ThumbKey(id: string): string {
-  return `thumbs/${id}.svg`;
 }
 
 /** `Content-Disposition` for a download. The ASCII `filename` stays as

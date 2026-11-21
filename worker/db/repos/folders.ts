@@ -110,21 +110,6 @@ export async function depthOf(env: Env, owner: string, id: string): Promise<numb
   return chain.length;
 }
 
-export async function maxSubtreeDepth(env: Env, owner: string, rootId: string): Promise<number> {
-  const db = getDb(env);
-  const row = await db.get<{ d: number | null }>(sql`
-    WITH RECURSIVE down(id, depth) AS (
-      SELECT id, 1 FROM folders WHERE id = ${rootId} AND owner = ${owner} AND deleted_at IS NULL
-      UNION ALL
-      SELECT f.id, down.depth + 1
-      FROM folders f JOIN down ON f.parent_id = down.id
-      WHERE f.owner = ${owner} AND f.deleted_at IS NULL
-    )
-    SELECT MAX(depth) AS d FROM down
-  `);
-  return row?.d ?? 1;
-}
-
 // All folders inside a subtree, returned as full rows (used by the
 // folder-share public listing). Returns [] when the root doesn't exist.
 export async function loadSubtree(env: Env, owner: string, rootId: string): Promise<FolderRow[]> {

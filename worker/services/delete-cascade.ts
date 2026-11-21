@@ -13,7 +13,7 @@ import { eq } from "drizzle-orm";
 import { getDb, t } from "../db/client";
 import { chunk } from "../db/filters";
 import * as filesRepo from "../db/repos/files";
-import { r2FileKey, r2ThumbKey } from "../lib/responses";
+import { r2FileKey, r2ThumbKey } from "../lib/keys";
 import type { Env, FileKind } from "../types";
 import { deleteAllStaticSiteAssets } from "./static-site";
 

@@ -288,8 +288,6 @@ export interface TagPublic {
 
 export type TagTargetType = "file" | "folder";
 
-export type TaggingRow = InferSelectModel<typeof t.taggings>;
-
 // What the client PUTs as a file blob. We don't validate the inner shape
 // of `elements` / `appState` / `files` — Excalidraw owns that schema and
 // it changes between versions. We just round-trip the JSON.
@@ -304,6 +302,16 @@ export interface ExcalidrawFileBlob {
 export interface DrawioFileBlob {
   kind: "drawio";
   xml: string;
+}
+
+/** Type guard for a stored draw.io blob. Lives here (not in the
+ *  file-blob service) so the response layer can narrow without importing
+ *  the service and creating a module cycle. */
+export function isDrawioBlob(blob: FileBlob): blob is DrawioFileBlob {
+  return (
+    (blob as { kind?: unknown }).kind === "drawio" &&
+    typeof (blob as { xml?: unknown }).xml === "string"
+  );
 }
 
 /** Canonical representation for Markdown documents. The internal

@@ -18,13 +18,8 @@ import * as foldersRepo from "../db/repos/folders";
 import * as sharesRepo from "../db/repos/shares";
 import * as tagsRepo from "../db/repos/tags";
 import { ownerRenderPayload, signRender } from "../lib/crypto";
-import {
-  errorResponse,
-  jsonResponse,
-  r2ThumbKey,
-  serveThumb,
-  streamFileResponse,
-} from "../lib/responses";
+import { r2ThumbKey } from "../lib/keys";
+import { errorResponse, jsonResponse, serveThumb, streamFileResponse } from "../lib/responses";
 import { now } from "../lib/util";
 import { requireSession } from "../middleware/auth";
 import { parseJson, parseJsonOrEmpty } from "../middleware/body";

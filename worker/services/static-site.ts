@@ -19,7 +19,7 @@
 
 import { unzipSync } from "fflate";
 import * as filesRepo from "../db/repos/files";
-import { r2FileKey } from "../lib/responses";
+import { r2FileKey, r2StaticSiteAssetKey, r2StaticSitePrefix } from "../lib/keys";
 import { now } from "../lib/util";
 import type { Env, FileRow, StaticSiteAsset, StaticSiteFileBlob } from "../types";
 
@@ -237,15 +237,6 @@ export async function writeManifest(
   await env.R2.put(r2FileKey(id), JSON.stringify(sorted), {
     httpMetadata: { contentType: "application/json" },
   });
-}
-
-// ─── R2 layout for assets ───────────────────────────────────────────
-export function r2StaticSiteAssetKey(id: string, relpath: string): string {
-  return `static-sites/${id}/${relpath}`;
-}
-
-export function r2StaticSitePrefix(id: string): string {
-  return `static-sites/${id}/`;
 }
 
 /** Paginated delete of every R2 object under a site's prefix.
