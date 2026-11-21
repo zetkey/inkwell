@@ -249,8 +249,18 @@ r.post("/purge", async (c) => {
   if (body instanceof Response) return body;
   const resolved = await resolveRefs(c.env, owner, body.items, "trashed");
   if (resolved instanceof Response) return resolved;
-  await purgeItems(c.env, owner, uniqueRefs(body.items));
-  return jsonResponse({ ok: true });
+  const result = await purgeItems(c.env, owner, uniqueRefs(body.items));
+  if (result.failed > 0) {
+    return jsonResponse(
+      {
+        error: `${result.failed} item(s) could not be purged; they stay in Trash for a later retry`,
+        purged: result.purged,
+        failed: result.failed,
+      },
+      { status: 500 },
+    );
+  }
+  return jsonResponse({ ok: true, purged: result.purged });
 });
 
 // ─── POST /api/items/star ────────────────────────────────────────────

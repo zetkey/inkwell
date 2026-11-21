@@ -212,6 +212,11 @@ export async function putFileBlob(env: Env, row: FileRow, req: Request): Promise
     return errorResponse(400, "static-site files are managed via /api/files/:id/assets endpoints");
   }
 
+  // Refuse an outsized body from its header before buffering it; the
+  // byteLength check below still covers chunked/lying clients.
+  const declared = Number(req.headers.get("content-length") || "0");
+  if (declared > MAX_FILE_BYTES) return errorResponse(413, "file too large");
+
   const buf = await req.arrayBuffer();
   if (buf.byteLength === 0) return errorResponse(400, "empty body");
   if (buf.byteLength > MAX_FILE_BYTES) return errorResponse(413, "file too large");
@@ -395,7 +400,16 @@ export async function mirrorRenameIntoExcalidrawBlob(
     ...excalidraw,
     appState: { ...(excalidraw.appState ?? {}), name: nextName },
   };
-  await env.R2.put(r2FileKey(row.id), JSON.stringify(nextBlob), {
-    httpMetadata: { contentType: "application/json" },
-  });
+  // Conditional write: an autosave may have replaced the blob between the
+  // `get` above and this `put`. Losing the precondition means the editor's
+  // content wins — D1 keeps the canonical name, and the next autosave
+  // mirrors it. Never surface that as an error.
+  try {
+    await env.R2.put(r2FileKey(row.id), JSON.stringify(nextBlob), {
+      httpMetadata: { contentType: "application/json" },
+      onlyIf: { etagMatches: obj.httpEtag },
+    });
+  } catch {
+    // Precondition failed (or R2 hiccup): best-effort, D1 stays canonical.
+  }
 }

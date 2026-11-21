@@ -44,6 +44,22 @@ describe("unzipSite", () => {
     expect((error as StaticSiteError).message).toContain("huge.bin");
   });
 
+  it("rejects a ZIP with too many entries before full inflation", () => {
+    const entries: Record<string, Uint8Array> = {};
+    for (let i = 0; i < 600; i++) entries[`f${i}.txt`] = new Uint8Array([97]);
+    const zip = zipSync(entries, { level: 0 });
+
+    let error: unknown;
+    try {
+      unzipSite(zip);
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(StaticSiteError);
+    expect((error as StaticSiteError).status).toBe(413);
+    expect((error as StaticSiteError).message).toContain("too many entries");
+  });
+
   it("rejects garbage as a bad ZIP", () => {
     expect(() => unzipSite(new Uint8Array([1, 2, 3, 4]))).toThrow(StaticSiteError);
   });

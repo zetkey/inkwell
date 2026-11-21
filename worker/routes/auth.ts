@@ -7,7 +7,13 @@
 import { Hono } from "hono";
 import { clearSessionCookie, createSessionCookie, loginWithPassword } from "../auth";
 import * as loginAttemptsRepo from "../db/repos/login-attempts";
-import { isLoginThrottled, loginAttemptKey, retryAfterSeconds } from "../lib/login-throttle";
+import {
+  isLoginThrottled,
+  LOGIN_IP_MAX_FAILS,
+  loginAttemptKey,
+  loginIpKey,
+  retryAfterSeconds,
+} from "../lib/login-throttle";
 import { errorResponse, jsonResponse } from "../lib/responses";
 import { now } from "../lib/util";
 import { parseJson } from "../middleware/body";
@@ -31,13 +37,20 @@ r.post("/login", async (c) => {
   // another proxy of ours it degrades to one shared bucket ("unknown"),
   // which is still safer than an unbounded credential-stuffing surface.
   const ip = c.req.header("cf-connecting-ip") ?? "unknown";
-  const key = loginAttemptKey(email, ip);
+  const emailKey = loginAttemptKey(email, ip);
+  const ipKey = loginIpKey(ip);
   const at = now();
-  const attempt = await loginAttemptsRepo.load(c.env, key);
-  if (isLoginThrottled(attempt, at)) {
+  // Two buckets: per credential+source (low threshold, stops guessing one
+  // account) and per source (high threshold, stops spraying many emails).
+  const [emailAttempt, ipAttempt] = await Promise.all([
+    loginAttemptsRepo.load(c.env, emailKey),
+    loginAttemptsRepo.load(c.env, ipKey),
+  ]);
+  if (isLoginThrottled(emailAttempt, at) || isLoginThrottled(ipAttempt, at, LOGIN_IP_MAX_FAILS)) {
+    const wait = Math.max(retryAfterSeconds(emailAttempt, at), retryAfterSeconds(ipAttempt, at));
     return jsonResponse(
       { error: "too many login attempts, try again later" },
-      { status: 429, headers: { "retry-after": String(retryAfterSeconds(attempt, at)) } },
+      { status: 429, headers: { "retry-after": String(wait) } },
     );
   }
 
@@ -46,12 +59,18 @@ r.post("/login", async (c) => {
     if (result.reason === "misconfigured") {
       return errorResponse(500, "server misconfigured: SUPER_ADMIN_PASSWORD missing");
     }
-    await loginAttemptsRepo.recordFailure(c.env, key, at);
+    await Promise.all([
+      loginAttemptsRepo.recordFailure(c.env, emailKey, at),
+      loginAttemptsRepo.recordFailure(c.env, ipKey, at),
+    ]);
     if (result.reason === "disabled") return errorResponse(403, "account disabled");
     return errorResponse(401, "invalid email or password");
   }
 
-  await loginAttemptsRepo.clear(c.env, key);
+  await Promise.all([
+    loginAttemptsRepo.clear(c.env, emailKey),
+    loginAttemptsRepo.clear(c.env, ipKey),
+  ]);
   const cookie = await createSessionCookie(c.env, result.user);
   return jsonResponse(
     {

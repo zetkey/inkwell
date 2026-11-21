@@ -4,6 +4,10 @@
 
 /** Failures allowed per window before the key is refused. */
 export const LOGIN_MAX_FAILS = 5;
+/** Failures allowed per window for the per-source (`ip|*`) bucket. Higher
+ *  than the per-credential limit so one office NAT is not locked out by a
+ *  single bad actor, while still bounding distributed guessing. */
+export const LOGIN_IP_MAX_FAILS = 20;
 /** Window length. A lapse restarts the count. */
 export const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 
@@ -18,9 +22,18 @@ export function loginAttemptKey(email: string, ip: string): string {
   return `${email.trim().toLowerCase()}|${ip}`;
 }
 
-export function isLoginThrottled(row: LoginAttemptRow | null, at: number): boolean {
+/** Per-source key, independent of the email being tried. */
+export function loginIpKey(ip: string): string {
+  return `${ip}|*`;
+}
+
+export function isLoginThrottled(
+  row: LoginAttemptRow | null,
+  at: number,
+  maxFails: number = LOGIN_MAX_FAILS,
+): boolean {
   if (!row) return false;
-  return row.reset_at > at && row.fails >= LOGIN_MAX_FAILS;
+  return row.reset_at > at && row.fails >= maxFails;
 }
 
 /** `Retry-After` seconds; always ≥ 1 while a window is active. */

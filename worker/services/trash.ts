@@ -30,6 +30,7 @@ import { and, eq, isNotNull, isNull, lte, type SQL, sql } from "drizzle-orm";
 import { type BatchStatement, type DB, getDb, runBatch, t } from "../db/client";
 import { inIds } from "../db/filters";
 import { MAX_DEPTH } from "../db/repos/folders";
+import * as loginAttemptsRepo from "../db/repos/login-attempts";
 import {
   chainUp,
   childrenMap,
@@ -44,6 +45,13 @@ import {
 import { now } from "../lib/util";
 import type { Env, FileKind, RestoredItemPublic, TrashItemPublic } from "../types";
 import { deleteFileObjects } from "./delete-cascade";
+
+/** Outcome of a purge: rows removed, and rows kept because their R2
+ *  objects could not be deleted (retried by a later run). */
+export interface PurgeResult {
+  purged: number;
+  failed: number;
+}
 
 function split(refs: readonly ItemRef[]): { fileIds: string[]; folderIds: string[] } {
   return {
@@ -279,8 +287,8 @@ export async function purgeItems(
   env: Env,
   owner: string,
   refs: readonly ItemRef[],
-): Promise<number> {
-  if (refs.length === 0) return 0;
+): Promise<PurgeResult> {
+  if (refs.length === 0) return { purged: 0, failed: 0 };
   const db = getDb(env);
   const { fileIds, folderIds } = split(refs);
 
@@ -344,18 +352,23 @@ export async function purgeItems(
       if (key !== undefined && r.trashed_via === key) delFiles.set(r.id, r.kind);
     }
   }
-  if (delFiles.size === 0 && delFolders.size === 0) return 0;
+  if (delFiles.size === 0 && delFolders.size === 0) return { purged: 0, failed: 0 };
 
   // 2. R2 first: if the D1 batch below then fails, the rows are still in
   //    Trash and a retry cleans up; the reverse order could orphan blobs.
-  await deleteFileObjects(
+  //    Files whose objects could not be removed keep their row — deleting
+  //    it would orphan the bytes for good.
+  const failedIds = await deleteFileObjects(
     env,
     [...delFiles].map(([id, kind]) => ({ id, kind })),
   );
+  const failed = new Set(failedIds);
 
   // 3–5. One transaction: detach survivors, drop dependents, delete rows.
-  const fIds = [...delFiles.keys()];
+  const fIds = [...delFiles.keys()].filter((id) => !failed.has(id));
   const dIds = [...delFolders];
+  // Nothing left to delete (every file's cleanup failed): keep all rows.
+  if (fIds.length === 0 && dIds.length === 0) return { purged: 0, failed: failed.size };
   const stmts: BatchStatement[] = [];
   if (dIds.length > 0) {
     stmts.push(
@@ -411,7 +424,7 @@ export async function purgeItems(
     );
   }
   await runBatch(env, stmts);
-  return fIds.length + dIds.length;
+  return { purged: fIds.length + dIds.length, failed: failed.size };
 }
 
 // ─── Listing ─────────────────────────────────────────────────────────
@@ -509,24 +522,26 @@ async function topLevelTrashRefs(
   ];
 }
 
-/** "Empty trash": purge every top-level Trash row. Returns how many
- *  Trash entries were removed. */
-export async function emptyTrash(env: Env, owner: string): Promise<number> {
+/** "Empty trash": purge every top-level Trash row. */
+export async function emptyTrash(env: Env, owner: string): Promise<PurgeResult> {
   const db = getDb(env);
   const refs = await topLevelTrashRefs(db, { owner });
-  await purgeItems(env, owner, refs);
-  return refs.length;
+  return await purgeItems(env, owner, refs);
 }
 
-// Upper bound on Trash entries purged per cron run, per table. Keeps one
-// invocation well inside the Worker CPU / subrequest budget; anything
-// left over is picked up by the next daily run.
-const PURGE_BATCH_LIMIT = 200;
+// Upper bound on Trash entries purged per cron run, per table. Kept low
+// because one entry can be a static site (one R2 list + one delete per
+// 1000 objects), so 20 entries stays inside the Worker CPU / subrequest
+// budget; the rest is picked up by the next daily run.
+const PURGE_BATCH_LIMIT = 20;
 
 /** Daily cron: purge top-level Trash rows older than the retention
  *  window, across all users. Returns the number of entries purged. */
 export async function purgeExpired(env: Env, nowMs: number): Promise<number> {
   const db = getDb(env);
+  // TTL sweep for the login throttle: only abandoned counters remain
+  // (a successful login deletes its own key).
+  await loginAttemptsRepo.deleteExpired(env, nowMs);
   const due = await topLevelTrashRefs(db, { deletedBefore: purgeCutoff(nowMs) }, PURGE_BATCH_LIMIT);
   const byOwner = new Map<string, ItemRef[]>();
   for (const r of due) {
@@ -535,14 +550,22 @@ export async function purgeExpired(env: Env, nowMs: number): Promise<number> {
     byOwner.set(r.owner, arr);
   }
   let purged = 0;
+  let failed = 0;
   for (const [owner, refs] of byOwner) {
     try {
-      await purgeItems(env, owner, refs);
-      purged += refs.length;
+      const result = await purgeItems(env, owner, refs);
+      purged += result.purged;
+      failed += result.failed;
     } catch (e) {
       // One owner's failure must not block everyone else's purge.
+      failed += refs.length;
       console.error("purgeExpired: owner purge failed", owner, e);
     }
+  }
+  if (failed > 0) {
+    console.error(
+      `purgeExpired: ${failed} item(s) kept in Trash (R2 cleanup failed); retrying next run`,
+    );
   }
   return purged;
 }

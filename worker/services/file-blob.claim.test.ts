@@ -15,7 +15,7 @@ vi.mock("../db/repos/files", () => ({
 vi.mock("../db/repos/tags", () => ({ listForEntity: async () => [] }));
 vi.mock("../db/repos/shares", () => ({ countActiveByTarget: async () => new Map() }));
 
-import { putFileBlob } from "./file-blob";
+import { mirrorRenameIntoExcalidrawBlob, putFileBlob } from "./file-blob";
 
 function row(overrides: Partial<FileRow> = {}): FileRow {
   return {
@@ -146,5 +146,75 @@ describe("putFileBlob rollback", () => {
 
     expect(res.status).toBe(200);
     expect(mocks.releaseVersion).not.toHaveBeenCalled();
+  });
+});
+
+describe("putFileBlob body cap", () => {
+  it("rejects an oversized Content-Length before claiming or buffering", async () => {
+    const puts: string[] = [];
+    const env = fakeEnv(puts);
+    const req = new Request("https://inkwell.test/api/files/file-1", {
+      method: "PUT",
+      headers: { "content-length": String(30 * 1024 * 1024) },
+    });
+
+    const res = await putFileBlob(env, row(), req);
+
+    expect(res.status).toBe(413);
+    expect(puts).toEqual([]);
+    expect(mocks.claimVersion).not.toHaveBeenCalled();
+  });
+});
+
+describe("mirrorRenameIntoExcalidrawBlob", () => {
+  it("writes only if the blob still has the etag it read", async () => {
+    const calls: { key: string; options: unknown }[] = [];
+    const blob = JSON.stringify({ elements: [], appState: { name: "old" }, files: {} });
+    const env = {
+      R2: {
+        get: async () => ({ httpEtag: '"etag-1"', text: async () => blob }),
+        put: async (key: string, _body: unknown, options: unknown) => {
+          calls.push({ key, options });
+        },
+      },
+    } as unknown as Env;
+
+    await mirrorRenameIntoExcalidrawBlob(env, row(), "new name");
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].key).toBe("scenes/file-1.json");
+    expect(calls[0].options).toEqual(
+      expect.objectContaining({ onlyIf: { etagMatches: '"etag-1"' } }),
+    );
+  });
+
+  it("swallows a lost precondition (autosave wins, D1 stays canonical)", async () => {
+    const blob = JSON.stringify({ elements: [], appState: {}, files: {} });
+    const env = {
+      R2: {
+        get: async () => ({ httpEtag: '"etag-1"', text: async () => blob }),
+        put: async () => {
+          throw new Error("precondition failed");
+        },
+      },
+    } as unknown as Env;
+
+    await expect(mirrorRenameIntoExcalidrawBlob(env, row(), "new name")).resolves.toBeUndefined();
+  });
+
+  it("does nothing for non-excalidraw files", async () => {
+    let touched = false;
+    const env = {
+      R2: {
+        get: async () => {
+          touched = true;
+          return null;
+        },
+      },
+    } as unknown as Env;
+
+    await mirrorRenameIntoExcalidrawBlob(env, row({ kind: "drawio" }), "x");
+
+    expect(touched).toBe(false);
   });
 });

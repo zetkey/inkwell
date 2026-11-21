@@ -4,7 +4,7 @@
 // logins can't lose increments: a lapsed window restarts at 1, otherwise
 // `fails` grows.
 
-import { eq, sql } from "drizzle-orm";
+import { eq, lt, sql } from "drizzle-orm";
 import type { LoginAttemptRow } from "../../lib/login-throttle";
 import { LOGIN_WINDOW_MS } from "../../lib/login-throttle";
 import type { Env } from "../../types";
@@ -42,4 +42,13 @@ export async function recordFailure(env: Env, key: string, at: number): Promise<
 export async function clear(env: Env, key: string): Promise<void> {
   const db = getDb(env);
   await db.delete(t.login_attempts).where(eq(t.login_attempts.key, key)).run();
+}
+
+/** Drop rows whose window has lapsed. Called from the daily cron: a
+ *  successful login already deletes its own key, so this only clears
+ *  abandoned counters. Returns the number of rows removed. */
+export async function deleteExpired(env: Env, at: number): Promise<number> {
+  const db = getDb(env);
+  const result = await db.delete(t.login_attempts).where(lt(t.login_attempts.reset_at, at)).run();
+  return result.meta.changes ?? 0;
 }

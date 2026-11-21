@@ -24,8 +24,20 @@ r.get("/", async (c) => {
 
 r.delete("/", async (c) => {
   const owner = c.get("session").userId;
-  const purged = await emptyTrash(c.env, owner);
-  return jsonResponse({ purged });
+  const result = await emptyTrash(c.env, owner);
+  // Items whose R2 objects could not be deleted keep their rows; report
+  // the partial failure instead of claiming a clean empty.
+  if (result.failed > 0) {
+    return jsonResponse(
+      {
+        error: `${result.failed} item(s) could not be purged; they stay in Trash for a later retry`,
+        purged: result.purged,
+        failed: result.failed,
+      },
+      { status: 500 },
+    );
+  }
+  return jsonResponse({ purged: result.purged });
 });
 
 export default r;

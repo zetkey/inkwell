@@ -162,9 +162,15 @@ pnpm run deploy                  # NB: bare `pnpm deploy` hits pnpm's builtin
 ### Automatic deploys (GitHub Actions)
 
 [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml) ships every
-push to `main` (or a manual dispatch from the Actions tab): install,
-`pnpm check:ci`, `pnpm test`, `pnpm drawio:assets`, `pnpm build`, then
+push to `main` (or a manual dispatch from the Actions tab), in this order:
+install → `pnpm check:ci` → `pnpm test` → `pnpm drawio:assets` →
+`pnpm build` → **`wrangler d1 migrations apply inkwell --remote`** →
 `wrangler deploy`.
+
+The migration step is idempotent: `wrangler` records applied files in
+`d1_migrations`, so a push with no new migration is a no-op. It runs
+*before* the Worker so new code never meets an old schema; a failed
+migration aborts the deploy and leaves the previous Worker live.
 
 Add both credentials as repository secrets on `zetkey/inkwell`:
 
@@ -176,8 +182,10 @@ gh secret set CLOUDFLARE_ACCOUNT_ID    # `pnpm exec wrangler whoami` prints the 
 Create the token in the Cloudflare dashboard → *My Profile* → *API Tokens* →
 the **Edit Cloudflare Workers** template.
 
-Production D1 migrations are **not** part of the deploy — run
-`pnpm db:migrate:remote` before pushing a Worker that needs new columns.
+Production D1 migrations are applied by that step, so a normal push needs no
+manual migration. To apply them by hand (or when deploying with
+`pnpm run deploy`), run `pnpm db:migrate:remote` first — it must finish
+before the new Worker starts serving.
 
 For local dev, copy `.dev.vars.example` to `.dev.vars` and adjust. The
 super-admin row is created lazily on the first login attempt that matches
@@ -227,6 +235,25 @@ its children up to the parent. Now the **whole subtree goes to Trash**, and
 it can be restored for 30 days. `DELETE /api/files/:id` and
 `DELETE /api/folders/:id` also move items to Trash rather than deleting them
 permanently.
+
+## Writing a migration
+
+Migrations are **hand-written**. `drizzle/meta/_journal.json` only tracks
+`0000_init`; `0001`–`0004` were authored directly in `drizzle/*.sql` and
+never had snapshots generated. Reconstructing those snapshots by hand is
+not safe, and letting `drizzle-kit generate` run against the drift would
+treat every existing table as unknown and emit `DROP`/`CREATE` statements.
+
+So `pnpm db:generate` is a guard: it prints this explanation and exits 1.
+To add a migration:
+
+1. Write `drizzle/000N_<slug>.sql` by hand (`CREATE`/`ALTER` only, safe to
+   apply before the new Worker is live).
+2. Mirror the change in `worker/db/schema.ts` so Drizzle queries typecheck.
+3. `pnpm db:migrate:local`, then `pnpm db:migrate:remote` (or let the
+   deploy workflow apply it).
+
+`pnpm db:migrate:local` and `pnpm db:migrate:remote` are unaffected.
 
 ## Costs
 

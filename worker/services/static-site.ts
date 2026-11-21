@@ -89,9 +89,14 @@ export function findPathPrefixCollision(paths: string[]): string | null {
  *  filter aborts the whole extraction. */
 export function unzipSite(buf: Uint8Array): Record<string, Uint8Array> {
   let total = 0;
+  let entries = 0;
   try {
     return unzipSync(buf, {
       filter: (file) => {
+        entries += 1;
+        if (entries > MAX_SITE_ASSET_COUNT) {
+          throw new StaticSiteError(413, `too many entries (max ${MAX_SITE_ASSET_COUNT})`);
+        }
         if (file.originalSize > MAX_SITE_ASSET_BYTES) {
           throw new StaticSiteError(
             413,
@@ -244,10 +249,14 @@ export function r2StaticSitePrefix(id: string): string {
 }
 
 /** Paginated delete of every R2 object under a site's prefix.
- *  Best-effort: failures are swallowed (D1 row is the source of truth
- *  for what *should* exist). */
-export async function deleteAllStaticSiteAssets(env: Env, id: string): Promise<void> {
+ *
+ *  Returns true when every page deleted cleanly. A false result (or a
+ *  throw from the listing) means objects may remain, which callers that
+ *  also delete the D1 row — Trash purge — must treat as "row stays, retry
+ *  next run" rather than swallow. */
+export async function deleteAllStaticSiteAssets(env: Env, id: string): Promise<boolean> {
   const prefix = r2StaticSitePrefix(id);
+  let ok = true;
   let cursor: string | undefined;
   do {
     const list = await env.R2.list({ prefix, cursor, limit: 1000 });
@@ -258,11 +267,13 @@ export async function deleteAllStaticSiteAssets(env: Env, id: string): Promise<v
       try {
         await env.R2.delete(keys);
       } catch {
-        await Promise.allSettled(keys.map((k) => env.R2.delete(k)));
+        const results = await Promise.allSettled(keys.map((k) => env.R2.delete(k)));
+        if (results.some((r) => r.status === "rejected")) ok = false;
       }
     }
     cursor = list.truncated ? list.cursor : undefined;
   } while (cursor);
+  return ok;
 }
 
 // ─── Manifest mutations ─────────────────────────────────────────────

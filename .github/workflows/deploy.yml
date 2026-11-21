@@ -54,6 +54,16 @@ jobs:
       - name: Build application
         run: pnpm build
 
+      # Apply pending D1 migrations before the new Worker goes live: the
+      # command is idempotent (it skips files already recorded in
+      # d1_migrations), so runs with no new migration are a no-op. Failures
+      # abort the deploy, leaving the old Worker serving the old schema.
+      - name: Apply D1 migrations
+        run: pnpm exec wrangler d1 migrations apply inkwell --remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
       - name: Deploy to Cloudflare
         run: pnpm exec wrangler deploy
         env:

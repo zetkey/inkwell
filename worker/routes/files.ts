@@ -553,10 +553,17 @@ r.post("/:id/assets", async (c) => {
     throw e;
   }
 
-  await writePendingAssets(c.env, id, pending);
-  const committed = await commitManifest(c.env, row, nextManifest);
-  if (!committed) return errorResponse(409, "version mismatch");
-  return siteResponse(c.env, owner, row, nextManifest, committed);
+  // Same order as the ZIP route: claim first so a lost race leaves R2 alone.
+  const claim = await claimManifestVersion(c.env, row, nextManifest);
+  if (!claim) return errorResponse(409, "version mismatch");
+  try {
+    await writePendingAssets(c.env, id, pending);
+    await writeManifest(c.env, id, nextManifest);
+  } catch {
+    await releaseManifestClaim(c.env, row, claim);
+    return errorResponse(500, "site update failed; the previous manifest is still in place");
+  }
+  return siteResponse(c.env, owner, row, nextManifest, claim);
 });
 
 // POST /api/files/:id/assets/zip — raw ZIP body, replace mode.

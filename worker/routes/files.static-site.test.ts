@@ -190,6 +190,68 @@ describe("POST /api/files/:id/assets/zip", () => {
   });
 });
 
+// `POST /:id/assets` (multipart) follows the same claim → write → publish
+// order as the ZIP route so a lost race never leaves orphan assets.
+function assetForm(name: string, text: string): FormData {
+  const form = new FormData();
+  form.append(name, new File([text], name, { type: "text/html" }));
+  return form;
+}
+
+describe("POST /api/files/:id/assets", () => {
+  it("returns 409 without writing when the claim loses", async () => {
+    mocks.claimVersion.mockResolvedValue(null);
+    const events: string[] = [];
+    const c = fakeEnv(events);
+
+    const res = await filesRoutes.request(
+      "http://localhost/f1/assets",
+      { method: "POST", body: assetForm("page.html", "<h1>x</h1>") },
+      c,
+    );
+
+    expect(res.status).toBe(409);
+    expect(events).toEqual([]);
+  });
+
+  it("claims, writes the asset, then the manifest", async () => {
+    mocks.claimVersion.mockResolvedValue(5);
+    const events: string[] = [];
+    const c = fakeEnv(events);
+
+    const res = await filesRoutes.request(
+      "http://localhost/f1/assets",
+      { method: "POST", body: assetForm("page.html", "<h1>x</h1>") },
+      c,
+    );
+
+    expect(res.status).toBe(200);
+    expect(events).toEqual(["put:static-sites/f1/page.html", `put:${MANIFEST_KEY}`]);
+    expect(mocks.releaseVersion).not.toHaveBeenCalled();
+  });
+
+  it("rolls the claim back when the manifest write fails", async () => {
+    mocks.claimVersion.mockResolvedValue(5);
+    const events: string[] = [];
+    const c = fakeEnv(events, { failManifestPut: true });
+
+    const res = await filesRoutes.request(
+      "http://localhost/f1/assets",
+      { method: "POST", body: assetForm("page.html", "<h1>x</h1>") },
+      c,
+    );
+
+    expect(res.status).toBe(500);
+    expect(mocks.releaseVersion).toHaveBeenCalledWith(
+      c,
+      "u1",
+      "f1",
+      expect.objectContaining({ expectedVersion: 5 }),
+    );
+    expect(events).toEqual(["put:static-sites/f1/page.html"]);
+  });
+});
+
 describe("DELETE /api/files/:id/assets/:path", () => {
   it("returns 409 without deleting when the claim loses", async () => {
     mocks.claimVersion.mockResolvedValue(null);

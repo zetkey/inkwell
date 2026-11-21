@@ -21,31 +21,57 @@ import { deleteAllStaticSiteAssets } from "./static-site";
 const R2_DELETE_BATCH = 1000;
 
 /**
- * Best-effort removal of every R2 object owned by the given files: the
- * blob (`scenes/{id}.json`), the thumbnail and — for static sites — the
- * whole `static-sites/{id}/` prefix. When `kind` is unknown the prefix is
- * listed anyway (a no-op for non-sites) so callers can't under-clean.
+ * Removal of every R2 object owned by the given files: the blob
+ * (`scenes/{id}.json`), the thumbnail and — for static sites — the whole
+ * `static-sites/{id}/` prefix. When `kind` is unknown the prefix is listed
+ * anyway (a no-op for non-sites) so callers can't under-clean.
  *
  * Blob + thumb keys go out in multi-key deletes so a large purge stays
  * well under the Worker subrequest budget; only static sites need the
- * per-file list call. Failures are swallowed: D1 is the source of truth
- * and a leftover object is merely wasted storage.
+ * per-file list call.
+ *
+ * Returns the ids whose cleanup failed. User deletion ignores it (best
+ * effort); Trash purge uses it to keep those rows so a later run retries
+ * instead of orphaning blobs.
  */
 export async function deleteFileObjects(
   env: Env,
   files: readonly { id: string; kind?: FileKind }[],
-): Promise<void> {
-  if (files.length === 0) return;
-  const keys = files.flatMap((f) => [r2FileKey(f.id), r2ThumbKey(f.id)]);
-  const tasks: Promise<unknown>[] = chunk(keys, R2_DELETE_BATCH).map((batch) =>
-    env.R2.delete(batch).catch(() => Promise.allSettled(batch.map((k) => env.R2.delete(k)))),
-  );
+): Promise<string[]> {
+  if (files.length === 0) return [];
+  const keyOwner = new Map<string, string>();
   for (const f of files) {
-    if (f.kind === undefined || f.kind === "static-site") {
-      tasks.push(deleteAllStaticSiteAssets(env, f.id));
+    keyOwner.set(r2FileKey(f.id), f.id);
+    keyOwner.set(r2ThumbKey(f.id), f.id);
+  }
+  const failed = new Set<string>();
+  for (const batch of chunk([...keyOwner.keys()], R2_DELETE_BATCH)) {
+    try {
+      await env.R2.delete(batch);
+    } catch {
+      // Retry one-by-one so only the keys that really failed keep their
+      // row (a multi-delete error doesn't say which key was at fault).
+      const results = await Promise.allSettled(batch.map((k) => env.R2.delete(k)));
+      results.forEach((result, i) => {
+        if (result.status === "rejected") {
+          const id = keyOwner.get(batch[i]);
+          if (id) failed.add(id);
+        }
+      });
     }
   }
-  await Promise.allSettled(tasks);
+  await Promise.all(
+    files
+      .filter((f) => f.kind === undefined || f.kind === "static-site")
+      .map(async (f) => {
+        try {
+          if (!(await deleteAllStaticSiteAssets(env, f.id))) failed.add(f.id);
+        } catch {
+          failed.add(f.id);
+        }
+      }),
+  );
+  return [...failed];
 }
 
 // Delete a user and everything they own: files (rows + R2 + thumbs),

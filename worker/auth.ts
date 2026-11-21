@@ -24,6 +24,13 @@ import type { Env, UserRow } from "./types";
 const COOKIE_NAME = "inkwell_session";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
+/** Valid PBKDF2 hash of an unguessable password, used to spend the same
+ *  CPU on an unknown email as on a real one. Without it, "no such user"
+ *  would return visibly faster than "wrong password" and leak which
+ *  addresses exist. */
+export const DUMMY_PASSWORD_HASH =
+  "pbkdf2$sha256$100000$N_MUw8_bRPNdumS91DJQYQ$LV_EplwRswVISjtGyKl53RvRZ8orIZAhtjMu5PTmjag";
+
 export interface Session {
   userId: string;
   email: string;
@@ -144,7 +151,11 @@ export async function loginWithPassword(
     if (!user) return { ok: false, reason: "invalid" };
   }
 
-  if (!user) return { ok: false, reason: "invalid" };
+  if (!user) {
+    // Anti-enumeration: unknown email costs the same as a wrong password.
+    await verifyPassword(password, DUMMY_PASSWORD_HASH);
+    return { ok: false, reason: "invalid" };
+  }
   if (user.disabled) return { ok: false, reason: "disabled" };
 
   const ok = await verifyPassword(password, user.password_hash);
