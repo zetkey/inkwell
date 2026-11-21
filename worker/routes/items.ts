@@ -19,7 +19,7 @@ import { getDb, t } from "../db/client";
 import { inIds } from "../db/filters";
 import * as foldersRepo from "../db/repos/folders";
 import { MAX_DEPTH } from "../db/repos/folders";
-import { bodyDeclaredTooLarge, MAX_JSON_BYTES } from "../lib/http";
+import { jsonBodyProblem, MAX_JSON_BYTES } from "../lib/http";
 import { checkFolderMove, dedupeByAncestor, type ItemRef, MAX_BULK_ITEMS } from "../lib/items";
 import { r2FileKey } from "../lib/keys";
 import { errorResponse, jsonResponse } from "../lib/responses";
@@ -42,15 +42,16 @@ const itemRef = z.object({
 const itemsBody = z.object({ items: z.array(itemRef).min(1) });
 const folderTarget = z.string().min(1).max(64).nullable();
 
-/** Parse + validate the body. The declared size is checked before
- *  `req.json()` so an oversized batch never reaches the parser; the item
- *  count is then capped before the schema runs so it is a clear 413
- *  rather than a generic 400. */
+/** Parse + validate the body. A declared `Content-Length` is required so a
+ *  chunked body cannot bypass the cap; the item count is then capped
+ *  before the schema runs so it is a clear 413 rather than a generic 400. */
 async function parseBody<S extends z.ZodType>(
   req: Request,
   schema: S,
 ): Promise<z.infer<S> | Response> {
-  if (bodyDeclaredTooLarge(req, MAX_JSON_BYTES)) {
+  const problem = jsonBodyProblem(req);
+  if (problem === "missing-length") return errorResponse(411, "Content-Length required");
+  if (problem === "too-large") {
     return errorResponse(413, `request body exceeds ${MAX_JSON_BYTES} bytes`);
   }
   let raw: unknown;
@@ -227,14 +228,22 @@ r.post("/restore", async (c) => {
   const refs = uniqueRefs(body.items);
   // Trash keeps the D1 row while the R2 blob can already be gone (purge
   // races, manual cleanup). Restoring such a file would hand the editor an
-  // empty document, so refuse the whole batch up front.
-  for (const ref of refs) {
-    if (ref.type !== "file") continue;
-    const blob = await c.env.R2.head(r2FileKey(ref.id));
-    if (!blob) {
-      const name = resolved.files.get(ref.id)?.name ?? ref.id;
-      return errorResponse(409, `cannot restore "${name}": file content is missing from storage`);
-    }
+  // empty document, so refuse the whole batch up front. Heads are checked a
+  // few at a time: 500 refs at one-per-request would blow the Free plan's
+  // subrequest budget.
+  const RESTORE_CHECK_CONCURRENCY = 10;
+  const fileRefs = refs.filter((ref) => ref.type === "file");
+  const missing: string[] = [];
+  for (let i = 0; i < fileRefs.length; i += RESTORE_CHECK_CONCURRENCY) {
+    const batch = fileRefs.slice(i, i + RESTORE_CHECK_CONCURRENCY);
+    const absent = await Promise.all(
+      batch.map(async (ref) => ((await c.env.R2.head(r2FileKey(ref.id))) ? null : ref.id)),
+    );
+    for (const id of absent) if (id) missing.push(id);
+  }
+  if (missing.length > 0) {
+    const name = resolved.files.get(missing[0])?.name ?? missing[0];
+    return errorResponse(409, `cannot restore "${name}": file content is missing from storage`);
   }
   const parents = new Map<string, string | null>();
   for (const ref of refs) {

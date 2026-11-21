@@ -68,6 +68,22 @@ export function isHtmlPath(path: string): boolean {
   return /\.(x?html?)$/i.test(path);
 }
 
+/**
+ * Keep only unsaved edits whose path still exists in the manifest.
+ *
+ * Used after a conflict refresh (and after any mutation): if another
+ * client deleted `old.css`, a local edit for it must not be uploaded by
+ * the next save and resurrect the file.
+ */
+export function pruneEditsToPaths(
+  edits: Readonly<Record<string, string>>,
+  assets: readonly Pick<StaticSiteAsset, "path">[],
+): Record<string, string> {
+  const live = new Set(assets.map((a) => a.path));
+  const kept = Object.entries(edits).filter(([path]) => live.has(path));
+  return kept.length === Object.keys(edits).length ? { ...edits } : Object.fromEntries(kept);
+}
+
 export type TreeNode =
   | { type: "dir"; name: string; path: string; children: TreeNode[] }
   | { type: "file"; name: string; path: string; asset: StaticSiteAsset };

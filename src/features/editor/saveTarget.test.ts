@@ -24,7 +24,7 @@ function Page({ loaded, saves }: { loaded: Loaded | null; saves: SaveCall[] }) {
   const targetRef = useRef<string | null>(null);
   targetRef.current = lastLoadedId(targetRef.current, loaded);
 
-  const lifecycle = useSaveLifecycle<string, Loaded>({
+  const lifecycle = useSaveLifecycle<string>({
     initialVersion: 1,
     initialFingerprint: "seed",
     readOnly: false,

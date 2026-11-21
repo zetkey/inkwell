@@ -42,6 +42,13 @@ export const MAX_THUMB_BYTES = 1 * 1024 * 1024;
  *  body limit is. Matches the client's `MAX_FILE_UPLOAD_BYTES`. */
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
+/** Per-owner R2 budget for uploaded files, counted from `files.size_bytes`
+ *  (Trash included — those blobs stay in R2 until the purge). The upload
+ *  route checks it before writing anything, so one account cannot fill the
+ *  bucket on its own. Two concurrent uploads can overshoot by one file; a
+ *  hard quota would need a D1 reservation. */
+export const MAX_USER_STORAGE_BYTES = 1024 * 1024 * 1024;
+
 // ─── Blob construction ──────────────────────────────────────────────
 //
 // Two-phase seeding:

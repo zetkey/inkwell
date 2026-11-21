@@ -915,15 +915,20 @@ function ConflictBanner({ onReload, onDismiss }: { onReload: () => void; onDismi
         className="size-4 shrink-0 text-destructive"
       />
       <span className="min-w-0 flex-1">
-        This file was saved from another tab or device. Inkwell picked up the newer version — reload
-        to see it (edits made since your last save are dropped).
+        Another tab or device saved this file. Your local edits are still here and unsaved — saving
+        is paused. Reload discards them and loads the newer version.
       </span>
-      <Button variant="outline" size="xs" onClick={onReload}>
+      <Button variant="outline" size="xs" onClick={onReload} title="Discard local edits and reload">
         <HugeiconsIcon icon={RefreshIcon} strokeWidth={2} />
         Reload
       </Button>
-      <Button variant="ghost" size="xs" onClick={onDismiss}>
-        Dismiss
+      <Button
+        variant="ghost"
+        size="xs"
+        onClick={onDismiss}
+        title="Keep editing — saving stays paused until you reload"
+      >
+        Keep editing
       </Button>
     </div>
   );

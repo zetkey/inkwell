@@ -178,8 +178,51 @@ sharedSites.get("/:token/:sig/:path{.*}", async (c) => {
 });
 
 // ─── Asset resolver + serve ───────────────────────────────────────
-async function serveAsset(env: Env, row: FileRow, relpath: string): Promise<Response> {
+//
+// A preview page issues one request per asset, and each one used to read
+// and parse the site manifest from R2. The manifest is immutable for a
+// given `(file id, version)` — every mutation claims a new version — so a
+// small per-isolate cache takes that read off the hot path. Bounded by
+// entry count and TTL so an isolate cannot grow without limit; the key
+// includes the version, so a mutation misses immediately.
+const MANIFEST_CACHE_MAX_ENTRIES = 32;
+const MANIFEST_CACHE_TTL_MS = 30_000;
+const manifestCache = new Map<string, { manifest: StaticSiteFileBlob; expiresAt: number }>();
+
+function cachedManifest(key: string): StaticSiteFileBlob | null {
+  const hit = manifestCache.get(key);
+  if (!hit) return null;
+  if (hit.expiresAt <= Date.now()) {
+    manifestCache.delete(key);
+    return null;
+  }
+  // Refresh recency: Map iteration order is insertion order (LRU-ish).
+  manifestCache.delete(key);
+  manifestCache.set(key, hit);
+  return hit.manifest;
+}
+
+function rememberManifest(key: string, manifest: StaticSiteFileBlob): void {
+  manifestCache.delete(key);
+  manifestCache.set(key, { manifest, expiresAt: Date.now() + MANIFEST_CACHE_TTL_MS });
+  while (manifestCache.size > MANIFEST_CACHE_MAX_ENTRIES) {
+    const oldest = manifestCache.keys().next().value;
+    if (oldest === undefined) break;
+    manifestCache.delete(oldest);
+  }
+}
+
+async function manifestForServe(env: Env, row: FileRow): Promise<StaticSiteFileBlob | null> {
+  const key = `${row.id}:${row.version}`;
+  const hit = cachedManifest(key);
+  if (hit) return hit;
   const manifest = await readManifest(env, row.id);
+  if (manifest) rememberManifest(key, manifest);
+  return manifest;
+}
+
+async function serveAsset(env: Env, row: FileRow, relpath: string): Promise<Response> {
+  const manifest = await manifestForServe(env, row);
   if (!manifest) return errorResponse(500, "manifest missing");
 
   const resolved = resolveAssetPath(manifest, relpath);

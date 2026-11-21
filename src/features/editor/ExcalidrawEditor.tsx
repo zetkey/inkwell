@@ -68,8 +68,6 @@ export interface ExcalidrawEditorProps {
    *  invalidate scene/folder list queries so explorer cards re-render
    *  with the new `thumbUpdatedAt` cache-bust token. */
   onThumbSaved?: () => void;
-  /** Function to re-fetch the scene from the server (used after a 409). */
-  reload?: () => Promise<LoadedFile>;
   /**
    * Slot rendered as children of `<Excalidraw>` so consumers can mount
    * native Excalidraw UI: `<MainMenu>` for the hamburger, optionally
@@ -98,7 +96,6 @@ export default function ExcalidrawEditor({
   save,
   saveThumb,
   onThumbSaved,
-  reload,
   chrome,
   renderHeader,
   collabPath,
@@ -164,11 +161,11 @@ export default function ExcalidrawEditor({
 
   const thumb = useThumbPipeline({ saveThumb, onThumbSaved, readOnly });
 
-  const lifecycle = useSaveLifecycle<FileBlob, LoadedFile>({
+  const lifecycle = useSaveLifecycle<FileBlob>({
     initialVersion: loaded.meta.version,
     initialFingerprint: initialSnapshot.fp,
     readOnly,
-    transport: { save, reload },
+    transport: { save },
     getLatest: () => {
       const snap = latestSnapshotRef.current;
       if (!snap) return null;

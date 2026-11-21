@@ -855,3 +855,17 @@
   background-color: rgba(255, 255, 255, 0.32);
   background-clip: padding-box;
 }
+
+/* Cheap list windowing (no dependency): skip layout/paint for rows and
+   cards that are offscreen while keeping them in the DOM, so selection,
+   drag, and keyboard navigation still see every item. The intrinsic-size
+   hints keep the scrollbar stable for skipped entries; tune them when a
+   row/card height changes. */
+.cv-list-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 48px;
+}
+.cv-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 220px;
+}

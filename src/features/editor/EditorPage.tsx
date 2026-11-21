@@ -38,17 +38,11 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { toast } from "sonner";
 import { openShortcutSheet } from "@/components/shell/shellStore";
 import { useFile } from "@/data/files";
 import { itemActions } from "@/features/actions/useItemActions";
-import {
-  ApiError,
-  type FileBlob,
-  type FilesQuery,
-  files,
-  type ItemRef,
-  type LoadedFile,
-} from "@/lib/api/client";
+import { ApiError, type FilesQuery, files, type ItemRef } from "@/lib/api/client";
 import { keys } from "@/lib/api/query-keys";
 import type { Command } from "@/lib/commands/registry";
 import { errorMessage } from "@/lib/errors";
@@ -60,6 +54,7 @@ import type { EditorHeaderBridge, RenderEditorHeader } from "./editorHeaderBridg
 import { FileViewerPage } from "./FileViewerPage";
 import { EditorDropZone } from "./shared/EditorDropZone";
 import { notifySaved } from "./shared/saveFeedback";
+import { useWorkingCopy } from "./useWorkingCopy";
 
 const DrawioEditor = lazy(() => import("./DrawioEditor"));
 const ExcalidrawEditor = lazy(() => import("./ExcalidrawEditor"));
@@ -80,15 +75,49 @@ export function EditorPage() {
   const qc = useQueryClient();
   const fileQuery = useFile(id);
   const navigate = useNavigate();
-  const [loaded, setLoaded] = useState<LoadedFile | null>(null);
+
+  // One guarded working copy for owner edits: sticky save target, live
+  // blob identity across our own saves, late-PUT/late-reload guards and
+  // the conflict flag all live in `useWorkingCopy` (shared with the
+  // share-token page). Keeping a second copy here is how the two paths
+  // drifted apart before.
+  const {
+    loaded,
+    setLoaded,
+    conflict,
+    setConflict,
+    editorKey,
+    save,
+    reload,
+    remountAfterConflict,
+  } = useWorkingCopy(
+    {
+      save: (target, version, blob) => files.save(target, version, blob),
+      load: (target) => files.load(target),
+      cacheKey: (target) => keys.files.detail(target),
+      nextLoaded: (prev, meta, blob) => ({
+        ...prev,
+        meta: {
+          ...prev.meta,
+          name: meta.name,
+          kind: meta.kind,
+          version: meta.version,
+          updatedAt: meta.updatedAt,
+          starredAt: prev.meta.starredAt ?? meta.starredAt ?? null,
+        },
+        blob,
+      }),
+      onSaved: () => {
+        // Keep explorer rows fresh after a save without refetching the
+        // active detail query (`keys.files.all` would prefix-match it).
+        qc.invalidateQueries({ queryKey: ["files", "list"] });
+        qc.invalidateQueries({ queryKey: ["folders", "list"] });
+      },
+    },
+    null,
+  );
   const loadedRef = useRef(loaded);
   loadedRef.current = loaded;
-  // Set when the save lifecycle hit a 409 and re-fetched: shows the
-  // non-blocking conflict banner in the header.
-  const [conflict, setConflict] = useState(false);
-  // Bumped by the conflict banner's Reload to remount the editor with
-  // the freshly loaded copy.
-  const [editorKey, setEditorKey] = useState(0);
   // Optimistic star state until the next detail refetch confirms it.
   const [starOverride, setStarOverride] = useState<{ id: string; starred: boolean } | null>(null);
   // Bumped to start the header's inline rename (palette "Rename", F2).
@@ -107,7 +136,7 @@ export function EditorPage() {
   useEffect(() => {
     if (loaded) return;
     if (fileQuery.data) setLoaded(fileQuery.data);
-  }, [fileQuery.data, loaded]);
+  }, [fileQuery.data, loaded, setLoaded]);
 
   // Metadata-only mirror of later detail refetches (see file header).
   // If a refetch raced a save and cached an older version than ours,
@@ -134,7 +163,7 @@ export function EditorPage() {
         ? { ...prev, meta: { ...prev.meta, name, folderId, starredAt } }
         : prev,
     );
-  }, [fileQuery.data, qc]);
+  }, [fileQuery.data, qc, setLoaded]);
 
   // When navigating to a *different* file, reset the working copy so the
   // seed effect above re-runs against the new query data.
@@ -152,7 +181,7 @@ export function EditorPage() {
       setStarOverride(null);
     }
     prevIdRef.current = id;
-  }, [id]);
+  }, [id, setConflict, setLoaded]);
 
   // Keep the folder listing warm: the shared item actions resolve names,
   // tags and parents from list caches (otherwise they fetch the whole
@@ -166,66 +195,6 @@ export function EditorPage() {
   });
 
   const starred = starOverride?.id === id ? starOverride.starred : loaded?.meta.starredAt != null;
-
-  // Explicit conflict reload (the header banner's Reload button): bypass
-  // the cache and force a fresh fetch. Never loads a staged server copy
-  // on its own — a silent reload would discard the user's pending edits.
-  const reload = useCallback(async () => {
-    const ls = await qc.fetchQuery({
-      queryKey: keys.files.detail(id),
-      queryFn: () => files.load(id),
-      staleTime: 0,
-    });
-    // The user may have navigated to another file while the fetch was in
-    // flight; never replace a different working copy with this one.
-    if (loadedRef.current?.meta.id === id) setLoaded(ls);
-    return ls;
-  }, [qc, id]);
-
-  // Save: throws ApiError(409) on version conflict so the editor's
-  // autosave loop can react. On success update only meta/version in the
-  // live working copy — keeping the previous `blob` reference is what
-  // stops the editors from re-seeding themselves after our own save. The
-  // cached detail row gets the saved blob so a later cold load shows the
-  // persisted content.
-  const save = useCallback(
-    async (version: number, blob: FileBlob) => {
-      const m = await files.save(id, version, blob);
-      const prev = loadedRef.current;
-      // A late PUT for a file the user already left must not touch the
-      // working copy on screen; just refresh that file's cached detail.
-      if (!prev || prev.meta.id !== id) {
-        qc.invalidateQueries({ queryKey: keys.files.detail(id), exact: true });
-        return { version: m.version };
-      }
-      const nextLoaded: LoadedFile = {
-        ...prev,
-        meta: {
-          ...prev.meta,
-          id,
-          name: m.name,
-          kind: m.kind,
-          version: m.version,
-          updatedAt: m.updatedAt,
-          // Once we've saved at least once, the editor's thumb pipeline
-          // will have shipped (or is about to ship) a thumb. Server
-          // `loadRow` is the source of truth on next cold load.
-          hasThumb: prev.meta.hasThumb,
-          starredAt: prev.meta.starredAt ?? m.starredAt ?? null,
-        },
-      };
-      setLoaded((cur) => (cur && cur.meta.id === id ? nextLoaded : cur));
-      qc.setQueryData<LoadedFile>(keys.files.detail(id), { ...nextLoaded, blob });
-      // Update cached file-list rows so explorer views show fresh data.
-      // Scope to list queries only — invalidating `keys.files.all` would
-      // also match `keys.files.detail(id)` (prefix match) and trigger a
-      // refetch of the active file on every save.
-      qc.invalidateQueries({ queryKey: ["files", "list"] });
-      qc.invalidateQueries({ queryKey: ["folders", "list"] });
-      return { version: m.version };
-    },
-    [id, qc],
-  );
 
   const saveThumb = useCallback((svg: string) => files.putThumb(id, svg), [id]);
 
@@ -295,7 +264,7 @@ export function EditorPage() {
       setLoaded((prev) => (prev ? { ...prev, meta: { ...prev.meta, name: next.trim() } } : prev));
       return true;
     },
-    [ref],
+    [ref, setLoaded],
   );
 
   // Palette / registry overrides with editor semantics. Only chords the
@@ -448,12 +417,13 @@ export function EditorPage() {
                 onReload: () => {
                   bridge.discard();
                   void reload()
-                    .then(() => {
+                    .then((ls) => {
                       setConflict(false);
-                      setEditorKey((k) => k + 1);
+                      remountAfterConflict(ls);
                     })
-                    .catch(() => {
-                      // Keep the banner; the fetch failed (offline/5xx).
+                    .catch((e: unknown) => {
+                      // Keep the banner; tell the user why nothing changed.
+                      toast.error(errorMessage(e, "Reload failed — try again"));
                     });
                 },
                 onDismiss: () => setConflict(false),

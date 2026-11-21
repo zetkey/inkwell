@@ -53,12 +53,12 @@ export interface SaveSnapshot<TBlob> {
   blob: TBlob;
 }
 
-export interface UseSaveLifecycleOptions<TBlob, TLoaded> {
+export interface UseSaveLifecycleOptions<TBlob> {
   initialVersion: number;
   initialFingerprint: string;
   /** Read-only sessions (share-token reads) skip the entire save path. */
   readOnly: boolean;
-  transport: SaveLifecycleTransport<TBlob, TLoaded>;
+  transport: SaveLifecycleTransport<TBlob>;
   /** Returns the latest in-memory snapshot to persist, or null if there
    *  is nothing pending. Called on every save attempt; the editor
    *  closes over its mutable snapshot ref. */
@@ -94,8 +94,8 @@ export interface UseSaveLifecycleResult {
   reset: (newVersion: number, newFingerprint: string) => void;
 }
 
-export function useSaveLifecycle<TBlob, TLoaded>(
-  opts: UseSaveLifecycleOptions<TBlob, TLoaded>,
+export function useSaveLifecycle<TBlob>(
+  opts: UseSaveLifecycleOptions<TBlob>,
 ): UseSaveLifecycleResult {
   const {
     initialVersion,
@@ -134,6 +134,11 @@ export function useSaveLifecycle<TBlob, TLoaded>(
   onConflictRef.current = onConflict;
   const readOnlyRef = useRef(readOnly);
   readOnlyRef.current = readOnly;
+  // Set on 409. While paused, changes never schedule a PUT and `saveNow`
+  // only re-surfaces the conflict; the user must Reload (reset) or
+  // Discard to leave this state. Clearing it on anything else would turn
+  // every later autosave into another doomed PUT.
+  const conflictPausedRef = useRef(false);
 
   // ─── The save loop ──────────────────────────────────────────────────
   const saveLatest = useCallback(async (): Promise<boolean> => {
@@ -175,14 +180,14 @@ export function useSaveLifecycle<TBlob, TLoaded>(
           } catch (e) {
             if (e instanceof ApiError && e.status === 409) {
               // Never auto-reload here: the server copy would replace the
-              // canvas and throw the user's pending work away. Keep the
-              // edits dirty and let the page's conflict banner offer an
-              // explicit Reload (which fetches a fresh blob with a new
-              // reference and remounts the editor).
+              // canvas and throw the user's pending work away. Pause all
+              // further attempts; only the page's banner can Reload
+              // (reset) or Discard.
+              conflictPausedRef.current = true;
               onConflictRef.current?.();
               setStatus("error");
               setErrorMsg(
-                "Conflict: another tab saved a newer version. Reload to get the latest, or discard your changes.",
+                "Conflict: another tab saved a newer version. Your edits are unsaved; reload to discard them, or keep editing.",
               );
             } else {
               setStatus("error");
@@ -222,6 +227,8 @@ export function useSaveLifecycle<TBlob, TLoaded>(
   // ─── Public API ────────────────────────────────────────────────────
   const notifyChange = useCallback(() => {
     if (readOnlyRef.current) return;
+    // Paused after a conflict: never schedule another doomed PUT.
+    if (conflictPausedRef.current) return;
     const snapshot = getLatestRef.current();
     if (!snapshot) return;
 
@@ -248,14 +255,22 @@ export function useSaveLifecycle<TBlob, TLoaded>(
   const saveNow = useCallback(async (): Promise<boolean> => {
     if (readOnlyRef.current) return true;
     debouncedSave.cancel();
+    if (conflictPausedRef.current) {
+      // Explicit save (⌘S) while paused: no PUT, just bring the banner
+      // back so the user can Reload (discard) or keep editing.
+      onConflictRef.current?.();
+      return false;
+    }
     return saveLatest();
   }, [debouncedSave, saveLatest]);
 
   // Cancels pending work only: an already in-flight PUT cannot be aborted
   // and will still land on the server. Callers that need that guarantee
-  // must block the leave until `saveNow()` resolves.
+  // must block the leave until `saveNow()` resolves. Discard is also the
+  // escape hatch from a conflict pause.
   const discardPendingLocalWork = useCallback(() => {
     debouncedSave.cancel();
+    conflictPausedRef.current = false;
     if (!inflightRef.current) {
       setStatus("saved");
       setErrorMsg(null);
@@ -266,6 +281,7 @@ export function useSaveLifecycle<TBlob, TLoaded>(
     (newVersion: number, newFingerprint: string) => {
       versionRef.current = newVersion;
       savedFpRef.current = newFingerprint;
+      conflictPausedRef.current = false;
       savePromiseRef.current = null;
       debouncedSave.cancel();
       setStatus("saved");

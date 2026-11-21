@@ -28,6 +28,19 @@ export async function findByEmail(env: Env, email: string): Promise<UserRow | nu
 const fileCountSql = sql<number>`COALESCE((SELECT COUNT(*) FROM files f WHERE f.owner = users.id AND f.deleted_at IS NULL), 0)`;
 const storageBytesSql = sql<number>`COALESCE((SELECT SUM(f.size_bytes) FROM files f WHERE f.owner = users.id), 0)`;
 
+/** Storage in bytes currently attributed to one owner. Trashed files count
+ *  too: their blobs stay in R2 until the Trash purge, so they still use the
+ *  quota. Used by the upload path's `MAX_USER_STORAGE_BYTES` check. */
+export async function storageBytesUsed(env: Env, owner: string): Promise<number> {
+  const db = getDb(env);
+  const row = await db
+    .select({ n: storageBytesSql })
+    .from(t.users)
+    .where(eq(t.users.id, owner))
+    .get();
+  return row?.n ?? 0;
+}
+
 // Admin list: every user with their owned-file count and storage use.
 export async function listAllAdmin(env: Env): Promise<AdminUserRow[]> {
   const db = getDb(env);

@@ -180,7 +180,7 @@ export const FolderCard = memo(function FolderCard(props: ItemProps) {
       {...p}
       className={cn(
         base,
-        "flex items-center gap-3 rounded-xl border bg-card px-3 py-2.5 shadow-card data-[dragging=true]:opacity-50",
+        "cv-card flex items-center gap-3 rounded-xl border bg-card px-3 py-2.5 shadow-card data-[dragging=true]:opacity-50",
         selected ? "border-primary ring-1 ring-primary/50" : "border-border hover:border-input",
       )}
     >
@@ -208,7 +208,7 @@ export const FileCard = memo(function FileCard(props: ItemProps) {
       {...p}
       className={cn(
         base,
-        "flex flex-col overflow-hidden rounded-xl border bg-card shadow-card data-[dragging=true]:opacity-50",
+        "cv-card flex flex-col overflow-hidden rounded-xl border bg-card shadow-card data-[dragging=true]:opacity-50",
         selected ? "border-primary ring-1 ring-primary/50" : "border-border hover:border-input",
       )}
     >
@@ -247,7 +247,7 @@ export const ListRow = memo(function ListRow(props: ItemProps & { withLocation: 
       {...p}
       className={cn(
         base,
-        "grid min-h-12 items-center gap-3 border-b border-border px-3 py-1.5 text-[13px] last:border-b-0 data-[dragging=true]:opacity-50",
+        "cv-list-row grid min-h-12 items-center gap-3 border-b border-border px-3 py-1.5 text-[13px] last:border-b-0 data-[dragging=true]:opacity-50",
         withLocation ? LIST_COLS.withLocation : LIST_COLS.plain,
         selected ? "bg-accent-soft" : "hover:bg-accent/60",
       )}

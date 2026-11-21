@@ -17,6 +17,7 @@ import * as filesRepo from "../db/repos/files";
 import * as foldersRepo from "../db/repos/folders";
 import * as sharesRepo from "../db/repos/shares";
 import * as tagsRepo from "../db/repos/tags";
+import * as usersRepo from "../db/repos/users";
 import { ownerRenderPayload, signRender } from "../lib/crypto";
 import { bodyDeclaredTooLarge } from "../lib/http";
 import { r2ThumbKey } from "../lib/keys";
@@ -38,11 +39,13 @@ import {
   MAX_FILE_BYTES,
   MAX_THUMB_BYTES,
   MAX_UPLOAD_BYTES,
+  MAX_USER_STORAGE_BYTES,
   mirrorRenameIntoExcalidrawBlob,
   normalizeImportedExcalidraw,
   putFileBlob,
 } from "../services/file-blob";
 import {
+  type AssetSnapshot,
   AssetWriteError,
   applyDelete,
   applyReplaceAll,
@@ -276,6 +279,19 @@ r.post("/upload", async (c) => {
   }
 
   const mime = safeMime(params.get("mime") || c.req.header("content-type"));
+
+  // Quota first: refuse before the R2 write so an over-budget upload
+  // leaves nothing behind. `size_bytes` counts Trash too (those blobs stay
+  // in R2 until the purge), which the message points at.
+  const used = await usersRepo.storageBytesUsed(c.env, owner);
+  if (used + size > MAX_USER_STORAGE_BYTES) {
+    const limit = Math.round(MAX_USER_STORAGE_BYTES / (1024 * 1024 * 1024));
+    return errorResponse(
+      413,
+      `storage quota exceeded (${limit} GiB per user); empty Trash or delete files to free space`,
+    );
+  }
+
   const meta = await createUploadedFile(c.env, owner, folderId, name, {
     body: size === 0 ? null : c.req.raw.body,
     size,
@@ -638,13 +654,18 @@ r.post("/:id/assets", async (c) => {
     throw e;
   }
 
+  // Snapshot before claiming: the bytes we capture are the ones readers at
+  // the current version see, and a read failure means we cannot promise a
+  // rollback — refuse without touching D1 or R2.
+  let snapshot: AssetSnapshot[];
+  try {
+    snapshot = await snapshotAssets(c.env, id, manifest, pending);
+  } catch {
+    return errorResponse(500, "could not read the current site; nothing was changed");
+  }
   // Same order as the ZIP route: claim first so a lost race leaves R2 alone.
   const claim = await claimManifestVersion(c.env, row, nextManifest);
   if (!claim) return errorResponse(409, "version mismatch");
-  // We hold the claim, so the stored bytes still match `manifest`. Capture
-  // the ones this upload will overwrite: a partial failure must restore
-  // them, or the old version would serve new bytes.
-  const snapshot = await snapshotAssets(c.env, id, manifest, pending);
   try {
     await writePendingAssets(c.env, id, pending);
     await writeManifest(c.env, id, nextManifest);
@@ -733,15 +754,20 @@ r.post("/:id/assets/zip", async (c) => {
     throw e;
   }
 
+  // Snapshot the paths this bundle will overwrite before claiming (see the
+  // multipart route): a read failure refuses the request untouched, and the
+  // claim→manifest window stays short.
+  let snapshot: AssetSnapshot[];
+  try {
+    snapshot = await snapshotAssets(c.env, id, manifest, pending);
+  } catch {
+    return errorResponse(500, "could not read the current site; nothing was changed");
+  }
+
   // Claim before any R2 mutation: a lost race must leave the old site
   // byte-for-byte intact, so the 409 path never writes or deletes.
   const claim = await claimManifestVersion(c.env, row, nextManifest);
   if (!claim) return errorResponse(409, "version mismatch");
-
-  // Same restore contract as the multipart route: paths the new bundle
-  // overwrites are snapshotted once the claim is held, and put back if a
-  // later write fails, so `version` and the served bytes stay in step.
-  const snapshot = await snapshotAssets(c.env, id, manifest, pending);
 
   try {
     // Overwrite in place, then publish the manifest. Existing paths are

@@ -12,7 +12,7 @@
 // rows in one `db.batch`. If the batch fails, the freshly written R2
 // objects are removed again so nothing is orphaned.
 
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { type DB, getDb, t } from "../db/client";
 import { chunk, inIds, notTrashed } from "../db/filters";
@@ -52,8 +52,10 @@ const MAX_DUPLICATE_FILES = MAX_BULK_ITEMS;
  *  optimistic. */
 const COPY_OPS_PER_FILE = 4;
 /** Bound on those operations per request. A half-finished copy is worse
- *  than a clear 413, so oversized requests are refused up front. */
-const MAX_COPY_OPS = 700;
+ *  than a clear 413, so oversized requests are refused up front. Kept at 40
+ *  for headroom under the Free plan's 50-subrequests-per-request budget —
+ *  the copy itself still needs the manifest read and its own bookkeeping. */
+const MAX_COPY_OPS = 40;
 const MAX_COPY_FILES = Math.floor(MAX_COPY_OPS / COPY_OPS_PER_FILE);
 
 /** R2 operations copying `files` will cost. Static sites add one `list`
@@ -190,12 +192,13 @@ export async function duplicateItems(
         : (folderById.get(r.id)?.parent_id ?? null);
     destinations.add(destOf(parent));
   }
+  const fileNames = await fileNamesInMany(db, owner, [...destinations]);
   for (const dest of destinations) {
     takenFolderNames.set(
       dest,
       new Set(liveFolders.filter((f) => f.parent_id === dest).map((f) => f.name)),
     );
-    takenFileNames.set(dest, await fileNamesIn(db, owner, dest));
+    takenFileNames.set(dest, fileNames.get(dest) ?? new Set());
   }
   const claim = (taken: Map<string | null, Set<string>>, dest: string | null, name: string) => {
     const set = taken.get(dest) ?? new Set<string>();
@@ -376,19 +379,33 @@ export async function duplicateItems(
   };
 }
 
-async function fileNamesIn(db: DB, owner: string, folderId: string | null): Promise<Set<string>> {
+/** Live file names per destination folder, in one query. A `null` key is
+ *  the root level. One query for every destination beats one per folder on
+ *  a multi-destination duplicate. */
+async function fileNamesInMany(
+  db: DB,
+  owner: string,
+  destinations: readonly (string | null)[],
+): Promise<Map<string | null, Set<string>>> {
+  const out = new Map<string | null, Set<string>>(
+    destinations.map((dest) => [dest, new Set<string>()] as const),
+  );
+  const ids = destinations.filter((dest): dest is string => dest !== null);
+  const includeRoot = destinations.includes(null);
+  if (ids.length === 0 && !includeRoot) return out;
+  const scope =
+    includeRoot && ids.length > 0
+      ? or(isNull(t.files.folder_id), inIds(t.files.folder_id, ids))
+      : includeRoot
+        ? isNull(t.files.folder_id)
+        : inIds(t.files.folder_id, ids);
   const rows = await db
-    .select({ name: t.files.name })
+    .select({ folder_id: t.files.folder_id, name: t.files.name })
     .from(t.files)
-    .where(
-      and(
-        eq(t.files.owner, owner),
-        folderId === null ? sql`${t.files.folder_id} IS NULL` : eq(t.files.folder_id, folderId),
-        notTrashed(t.files),
-      ),
-    )
+    .where(and(eq(t.files.owner, owner), scope, notTrashed(t.files)))
     .all();
-  return new Set(rows.map((r) => r.name));
+  for (const r of rows) out.get(r.folder_id)?.add(r.name);
+  return out;
 }
 
 async function loadTaggings(

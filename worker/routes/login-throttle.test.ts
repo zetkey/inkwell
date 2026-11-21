@@ -30,12 +30,20 @@ const env = {} as never;
 const at = Date.now();
 
 function login(email: string, ip: string) {
+  // `Content-Length` is explicit because the JSON routes now require it
+  // (a synthetic Request in Node does not surface the header undici would
+  // send on the wire).
+  const body = JSON.stringify({ email, password: "pw" });
   return app.request(
     "http://localhost/api/auth/login",
     {
       method: "POST",
-      headers: { "content-type": "application/json", "cf-connecting-ip": ip },
-      body: JSON.stringify({ email, password: "pw" }),
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": ip,
+        "content-length": String(body.length),
+      },
+      body,
     },
     env,
   );

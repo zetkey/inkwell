@@ -51,7 +51,6 @@ export interface MarkdownEditorProps {
   save: SaveFn;
   saveThumb: ThumbFn;
   onThumbSaved?: () => void;
-  reload?: () => Promise<LoadedFile>;
   /** Fired when a save hits 409; the page opens its conflict banner. */
   onConflict?: () => void;
   renderHeader?: RenderEditorHeader;
@@ -66,7 +65,6 @@ export default function MarkdownEditor({
   save,
   saveThumb,
   onThumbSaved,
-  reload,
   onConflict,
   renderHeader,
 }: MarkdownEditorProps) {
@@ -83,11 +81,11 @@ export default function MarkdownEditor({
   const latestRef = useRef({ source: canonical ?? "", fp: initialFingerprint });
   const thumb = useThumbPipeline({ saveThumb, onThumbSaved, readOnly });
 
-  const lifecycle = useSaveLifecycle<FileBlob, LoadedFile>({
+  const lifecycle = useSaveLifecycle<FileBlob>({
     initialVersion: loaded.meta.version,
     initialFingerprint,
     readOnly,
-    transport: { save, reload },
+    transport: { save },
     getLatest: () => {
       const latest = latestRef.current;
       return {

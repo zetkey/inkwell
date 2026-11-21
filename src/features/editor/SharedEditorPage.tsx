@@ -12,6 +12,7 @@
 
 import { lazy, useEffect, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { toast } from "sonner";
 import { useSharedFile } from "@/data/shares";
 import type { LoadedFile } from "@/lib/api/client";
 import { shares } from "@/lib/api/client";
@@ -221,8 +222,9 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
                     setConflict(false);
                     remountAfterConflict(ls);
                   })
-                  .catch(() => {
-                    // Keep the banner; the fetch failed (offline/5xx).
+                  .catch((e: unknown) => {
+                    // Keep the banner; tell the user why nothing changed.
+                    toast.error(errorMessage(e, "Reload failed — try again"));
                   });
               },
               onDismiss: () => setConflict(false),

@@ -448,6 +448,11 @@ export interface AssetSnapshot {
   contentType: string;
 }
 
+/** R2 reads issued in parallel while snapshotting old asset bytes. */
+const SNAPSHOT_CONCURRENCY = 8;
+/** R2 writes issued in parallel when putting snapped bytes back. */
+const RESTORE_CONCURRENCY = 16;
+
 /** Snapshot the current R2 bytes of every pending path that already exists
  *  in `manifest`, so a failed upload can put the previous bytes back.
  *
@@ -455,11 +460,15 @@ export interface AssetSnapshot {
  *  the D1 `version`/`size_bytes`, but without this the asset objects the
  *  failed upload managed to write would keep serving new bytes under the
  *  old version — a reader that loaded version N would see content that is
- *  not version N. Run this *after* winning the claim (no other writer can
- *  have touched the objects since) and before `writePendingAssets`.
+ *  not version N.
  *
- *  Best-effort per path: bytes that cannot be read are simply not
- *  snapshotted (there is nothing to restore). */
+ *  Run this *before* claiming the next version: a read failure propagates
+ *  (the caller refuses the request without touching D1), and the snapshot
+ *  never sits inside the claim→manifest window. Reads run in bounded
+ *  batches so a 300-asset overwrite still fans out a handful at a time.
+ *
+ *  A path whose object is missing from R2 is skipped — there is nothing to
+ *  restore for it. */
 export async function snapshotAssets(
   env: Env,
   id: string,
@@ -467,41 +476,50 @@ export async function snapshotAssets(
   pending: readonly PendingAsset[],
 ): Promise<AssetSnapshot[]> {
   const existing = new Map(manifest.assets.map((a) => [a.path, a]));
-  const out: AssetSnapshot[] = [];
-  for (const p of pending) {
+  const targets = pending.flatMap((p) => {
     const entry = existing.get(p.path);
-    if (!entry) continue;
-    try {
-      const obj = await env.R2.get(r2StaticSiteAssetKey(id, p.path));
-      if (!obj) continue;
-      out.push({
-        path: p.path,
-        bytes: new Uint8Array(await obj.arrayBuffer()),
-        contentType: entry.contentType,
-      });
-    } catch {
-      // Nothing to restore for this path.
-    }
+    return entry ? [{ path: p.path, contentType: entry.contentType }] : [];
+  });
+
+  const out: AssetSnapshot[] = [];
+  for (let i = 0; i < targets.length; i += SNAPSHOT_CONCURRENCY) {
+    const batch = targets.slice(i, i + SNAPSHOT_CONCURRENCY);
+    const results = await Promise.all(
+      batch.map(async ({ path, contentType }) => {
+        const obj = await env.R2.get(r2StaticSiteAssetKey(id, path));
+        if (!obj) return null;
+        return {
+          path,
+          bytes: new Uint8Array(await obj.arrayBuffer()),
+          contentType,
+        };
+      }),
+    );
+    for (const r of results) if (r) out.push(r);
   }
   return out;
 }
 
 /** Put snapped bytes back after a failed write. Best-effort and never
  *  throws: the caller reports the 500 either way, and a path that cannot
- *  be restored is the same state a crash mid-upload would leave. */
+ *  be restored is the same state a crash mid-upload would leave. Writes run
+ *  in bounded batches so a 500-asset restore does not fire 500 puts at
+ *  once. */
 export async function restoreAssets(
   env: Env,
   id: string,
   snapshots: readonly AssetSnapshot[],
 ): Promise<void> {
-  if (snapshots.length === 0) return;
-  await Promise.allSettled(
-    snapshots.map((s) =>
-      env.R2.put(r2StaticSiteAssetKey(id, s.path), s.bytes, {
-        httpMetadata: { contentType: s.contentType },
-      }),
-    ),
-  );
+  for (let i = 0; i < snapshots.length; i += RESTORE_CONCURRENCY) {
+    const batch = snapshots.slice(i, i + RESTORE_CONCURRENCY);
+    await Promise.allSettled(
+      batch.map((s) =>
+        env.R2.put(r2StaticSiteAssetKey(id, s.path), s.bytes, {
+          httpMetadata: { contentType: s.contentType },
+        }),
+      ),
+    );
+  }
 }
 
 /** Write assets in modest parallel batches. Returns the number written;

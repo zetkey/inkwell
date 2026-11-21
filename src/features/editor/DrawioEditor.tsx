@@ -61,7 +61,6 @@ interface DrawioEditorProps {
   /** Called after a successful thumb upload so the dashboard can
    *  invalidate caches and pick up the new bust token. */
   onThumbSaved?: () => void;
-  reload?: () => Promise<LoadedFile>;
   /** Fired when a save hits 409; the page opens its conflict banner. */
   onConflict?: () => void;
   /** Renders the page header above the iframe (see `EditorHeader`). */
@@ -141,153 +140,11 @@ function buildDrawioSrc(dark: boolean, style: "classic" | "sketch"): string {
   const ui = style === "sketch" ? "&ui=sketch" : "";
   return `/drawio/index.html?embed=1&proto=json&spin=1&libraries=1&noExitBtn=1&noSaveBtn=1&saveAndExit=0&dark=${dark ? 1 : 0}${ui}`;
 }
-
-// Stylesheet injected into the iframe document (menubar tweaks,
-// narrow-viewport toolbar scrolling, sidebar toggles, and hiding
-// drawio's own filename — the header shows it). All colours use
-// `light-dark()` so they follow drawio's `geDarkMode` body class.
-const MENUBAR_STYLE_ID = "inkwell-drawio-menubar-style";
-const MENUBAR_CSS = `
-/* Kennedy (classic) theme: drawio's native compact 30px menubar is
-   kept as-is — the file name, save state and host actions live in
-   Inkwell's EditorHeader above the iframe. */
-/* Drawio renders the filename in two places (.geStatusDiv in the
-   menubar container, .geStatus at the end of .geMenubar); the
-   EditorHeader already shows it, so both are hidden. */
-.geMenubarContainer > .geStatusDiv,
-.geMenubarContainer > .geMenubar > .geStatus {
-  display: none !important;
-}
-
-/* Toolbar horizontal-scroll on narrow viewports. Drawio's own
-   hideToolbarElements (grapheditor/EditorUi.js:543) reads each
-   button's data-min-width attribute and sets display:none via
-   inline style when window.innerWidth is below the threshold (1050
-   for embed mode), which clips 16/28 buttons at <=1024px with no
-   way to reach them. We override the inline display:none with
-   !important and let the toolbar scroll horizontally instead.
-   Sketch theme has no .geCompactMode and is unaffected. */
-@media (max-width: 1024px) {
-  .geEditor.geCompactMode > .geToolbarContainer {
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: thin;
-    -webkit-overflow-scrolling: touch;
-    padding-bottom: 2px;
-  }
-  .geEditor.geCompactMode > .geToolbarContainer::-webkit-scrollbar {
-    height: 4px;
-  }
-  /* Re-show every toolbar item drawio hid via inline style. The
-     inner .geToolbar is flex; restoring children to display:flex
-     keeps icon centring intact. Separators stay block. */
-  .geEditor.geCompactMode > .geToolbarContainer > .geToolbar > .geButton {
-    display: flex !important;
-  }
-  .geEditor.geCompactMode > .geToolbarContainer > .geToolbar > .geSeparator {
-    display: block !important;
-  }
-  /* The zoom-percent dropdown on the leading edge has its own
-     wrapper with width:auto; keep it visible too. */
-  .geEditor.geCompactMode > .geToolbarContainer > .geToolbar > .geZoomInput {
-    display: flex !important;
-  }
-}
-
-/* Touch-target bumps for page tabs along the bottom edge. */
-@media (pointer: coarse) {
-  .geTabContainer { min-height: 40px; }
-  .geTabContainer .geTab,
-  .geTabContainer .geButton { min-height: 36px; padding: 4px 10px; }
-}
-
-/* draw.io's "fork me" GitHub logo in the page-tab bar is not part of
-   Inkwell's chrome. */
-.geTabContainer a[href*="github.com"] { display: none !important; }
-
-/* Quiet, warm scrollbars. */
-* { scrollbar-color: color-mix(in srgb, currentColor 22%, transparent) transparent; }
-
-/* Sketch theme (body.geSketch, ui=sketch): the file name lives in
-   Inkwell's EditorHeader, so drawio's own filename status is hidden. */
-/* .geStatusDiv inside .geButtonContainer is where sketch renders
-   the file name. The whole sketchMenubarElt becomes empty in
-   embed mode (no comments / share / format buttons appended) so
-   we hide it entirely to avoid a stray dark pill at top-right.
-   Targeted via the inline-style flex set by drawio's JS so we beat
-   future style writes (e.g., on resize). */
-body.geSketch .geToolbarContainer > .geButtonContainer > .geStatusDiv {
-  display: none !important;
-}
-body.geSketch .geToolbarContainer[style*="position: absolute"][style*="right: 12px"] {
-  display: none !important;
-}
-`;
-
-// Inkwell palette → draw.io's own CSS custom properties. Both the
-// light and dark variable families are bound to the *currently
-// resolved* Inkwell tokens (read from the host document), so the
-// embedded UI reads as the same warm charcoal / paper surface as the
-// rest of the app. The iframe remounts on theme flips, so reading the
-// tokens once per boot is enough.
-function themeCss(): string {
-  const cs = getComputedStyle(document.documentElement);
-  const t = (name: string, fallback: string) => cs.getPropertyValue(name).trim() || fallback;
-  const bg = t("--background", "#171513");
-  const card = t("--card", "#1f1c19");
-  const border = t("--border", "#3a342d");
-  const fg = t("--foreground", "#f1ece3");
-  const muted = t("--muted", "#2a2621");
-  const secondary = t("--secondary", muted);
-  const mutedFg = t("--muted-foreground", "#a89f92");
-  const accent = t("--accent-soft", muted);
-  const accentText = t("--accent-text", t("--primary", "#f08a4b"));
-  const primary = t("--primary", "#f08a4b");
-  return `
-:root {
-  --ge-panel-color: ${card};
-  --toolbar-color: ${card};
-  --workspace-color: ${bg};
-  --inactive-color: ${secondary};
-  --active-color: ${muted};
-  --primary-color: ${accent};
-  --primary-hover-color: ${accent};
-  --accent-color: ${accent};
-  --accent-hover-color: ${accent};
-  --accent-text-color: ${accentText};
-  --border-color: ${border};
-  --highlight-color: ${secondary};
-  --text-color: ${fg};
-  --dark-color: ${bg};
-  --ge-dark-panel-color: ${card};
-  --dark-toolbar-color: ${card};
-  --dark-border-color: ${border};
-  --dark-text-color: ${fg};
-  --dark-accent-color: ${accent};
-  --dark-accent-text-color: ${primary};
-  --dark-active-accent-color: ${accent};
-  --dark-inverse-active-color: ${mutedFg};
-  --dark-highlight-color: ${secondary};
-  --dark-header-color: ${card};
-}
-html body.geEditor { background: ${bg}; }
-`;
-}
-
-function ensureStylesheet(doc: Document) {
-  if (doc.getElementById(MENUBAR_STYLE_ID)) return;
-  const style = doc.createElement("style");
-  style.id = MENUBAR_STYLE_ID;
-  style.textContent = themeCss() + MENUBAR_CSS;
-  doc.head.appendChild(style);
-}
-
 export default function DrawioEditor({
   loaded,
   save,
   saveThumb,
   onThumbSaved,
-  reload,
   onConflict,
   renderHeader,
 }: DrawioEditorProps) {
@@ -318,7 +175,6 @@ export default function DrawioEditor({
   const lastResolvedRef = useRef<ResolvedTheme>(resolved);
   const drawioStyle = useDrawioStyle();
 
-  const targetOrigin = useMemo(() => window.location.origin, []);
   const drawioSrc = useMemo(
     () => buildDrawioSrc(resolved === "dark", drawioStyle),
     [resolved, drawioStyle],
@@ -327,12 +183,13 @@ export default function DrawioEditor({
   // user's pref changes — same mechanism as the dark-mode flip below.
   const lastStyleRef = useRef(drawioStyle);
 
-  const post = useCallback(
-    (message: Record<string, unknown>) => {
-      iframeRef.current?.contentWindow?.postMessage(JSON.stringify(message), targetOrigin);
-    },
-    [targetOrigin],
-  );
+  const post = useCallback((message: Record<string, unknown>) => {
+    // The iframe is sandboxed without `allow-same-origin`, so its origin
+    // is opaque ("null"): a concrete `targetOrigin` would silently drop
+    // every frame. The channel is still scoped to this specific
+    // `contentWindow`, which is also what `onMessage` verifies.
+    iframeRef.current?.contentWindow?.postMessage(JSON.stringify(message), "*");
+  }, []);
 
   // Ask drawio to export the current diagram as SVG. The reply lands
   // in the `onMessage` handler as `{ event: 'export', format: 'svg',
@@ -412,11 +269,11 @@ export default function DrawioEditor({
     [post],
   );
 
-  const lifecycle = useSaveLifecycle<DrawioFileBlob, LoadedFile>({
+  const lifecycle = useSaveLifecycle<DrawioFileBlob>({
     initialVersion: loaded.meta.version,
     initialFingerprint: hashXml(initialXml),
     readOnly,
-    transport: { save, reload },
+    transport: { save },
     getLatest: () => {
       const xml = latestXmlRef.current;
       if (!xml) return null;
@@ -454,7 +311,11 @@ export default function DrawioEditor({
 
   useEffect(() => {
     function onMessage(event: MessageEvent) {
-      if (event.origin !== window.location.origin) return;
+      // The iframe is sandboxed without `allow-same-origin`, so its
+      // messages arrive with an opaque `"null"` origin. `event.source`
+      // is still the authoritative check; we also accept our own origin
+      // for the unsandboxed/dev case.
+      if (event.origin !== "null" && event.origin !== window.location.origin) return;
       if (event.source !== iframeRef.current?.contentWindow) return;
       if (typeof event.data !== "string") return;
 
@@ -467,19 +328,6 @@ export default function DrawioEditor({
 
       if (msg.event === "init") {
         setReady(true);
-        // Apply the Inkwell palette + overrides once drawio has built
-        // its UI (`init` fires after the DOM exists). Also done on the
-        // iframe `load` event to minimise the flash of stock colours.
-        const initDoc = iframeRef.current?.contentDocument;
-        if (initDoc) ensureStylesheet(initDoc);
-        // Keystrokes inside the iframe never reach the parent window:
-        // forward the editor chords (save, export, palette, shortcut
-        // sheet) so they behave like in every other editor.
-        const doc = iframeRef.current?.contentDocument;
-        if (doc && !forwardedDocs.has(doc)) {
-          forwardedDocs.add(doc);
-          doc.addEventListener("keydown", forwardEditorChord, true);
-        }
         post({
           action: "load",
           xml: latestXmlRef.current,
@@ -733,15 +581,15 @@ export default function DrawioEditor({
       {renderHeader?.(bridge)}
       <div className="relative min-h-0 w-full flex-1">
         {/*
-         * RISK: this iframe is same-origin (public/drawio) and our
-         * integration needs DOM access (`contentDocument` styling + the
-         * keydown forwarder), so `allow-same-origin` is required — which
-         * means the sandbox does NOT isolate the vendor bundle from the
-         * app origin (same-origin + scripts can reach the parent). It is
-         * still declared with the exact capability list drawio needs, so
-         * removing our DOM integration later is a one-line change here.
-         * Origin checks in `onMessage` stay on the real origin (not
-         * `null`) because `allow-same-origin` is present.
+         * The iframe is served same-origin (`public/drawio`) but runs in
+         * an opaque origin: no `allow-same-origin`, so the vendor bundle
+         * cannot read Inkwell's DOM, storage or cookies. The trade-off
+         * (v1): the custom drawio stylesheet and the in-iframe keyboard
+         * chord forwarder are gone — the header's Save/Export/Present and
+         * the global palette still work, but ⌘S/⌘K typed *inside* the
+         * canvas no longer reach Inkwell. Theme still follows `?dark=`.
+         * `event.origin` is `"null"` under this sandbox; `event.source`
+         * is the authoritative check in `onMessage`.
          */}
         <iframe
           // Remount when the resolved theme OR style changes so drawio
@@ -753,11 +601,7 @@ export default function DrawioEditor({
           title="draw.io editor"
           className="h-full w-full border-0 bg-background"
           allow="clipboard-read; clipboard-write"
-          sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads"
-          onLoad={(e) => {
-            const doc = e.currentTarget.contentDocument;
-            if (doc?.head) ensureStylesheet(doc);
-          }}
+          sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"
         />
         {ready ? null : (
           <DrawioBootOverlay
@@ -778,30 +622,6 @@ export default function DrawioEditor({
         onSaveAndLeave={() => void leave.saveAndLeave()}
       />
     </div>
-  );
-}
-
-// Documents (one per iframe load) that already carry the chord forwarder.
-const forwardedDocs = new WeakSet<Document>();
-
-/** Re-dispatches Inkwell's editor chords from the iframe onto the host window. */
-function forwardEditorChord(e: KeyboardEvent): void {
-  if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
-  const forward =
-    e.code === "KeyS" || (e.code === "KeyK" && !e.shiftKey) || (e.code === "Slash" && e.shiftKey);
-  if (!forward) return;
-  e.preventDefault();
-  e.stopPropagation();
-  window.dispatchEvent(
-    new KeyboardEvent("keydown", {
-      code: e.code,
-      key: e.key,
-      ctrlKey: e.ctrlKey,
-      metaKey: e.metaKey,
-      shiftKey: e.shiftKey,
-      bubbles: true,
-      cancelable: true,
-    }),
   );
 }
 

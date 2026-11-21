@@ -62,11 +62,15 @@ describe("shouldSendSnapshot", () => {
     expect(senders).toEqual(["a"]);
   });
 
-  it("includes self in the election even when absent from peers", () => {
-    // A presence frame may not list the receiver; a lower self id still
-    // makes it the elected sender, a higher one stays quiet.
-    expect(shouldSendSnapshot("a", [peer("b")], new Set())).toBe(true);
-    expect(shouldSendSnapshot("c", [peer("b")], new Set())).toBe(false);
+  it("never elects the peer that just joined", () => {
+    // `a` just joined and sorts lowest, but self has not seen it yet, so
+    // it is excluded from the election: the lowest *known* peer answers.
+    const peers = [peer("a"), peer("b"), peer("c")];
+    expect(shouldSendSnapshot("b", peers, new Set(["b", "c"]))).toBe(true);
+    expect(shouldSendSnapshot("c", peers, new Set(["b", "c"]))).toBe(false);
+    // The newcomer has seen everyone, so it has nothing unseen to react
+    // to and never sends (and would otherwise be elected by the others).
+    expect(shouldSendSnapshot("a", peers, new Set(["a", "b", "c"]))).toBe(false);
   });
 
   it("stays quiet when every peer is already known", () => {

@@ -27,7 +27,7 @@ import { createContext, useContext, useEffect, useMemo, useRef } from "react";
 import { matchPath, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer";
-import { useMe } from "@/data/auth";
+import { sessionUnavailable, useMe } from "@/data/auth";
 import { registerAppCommands, setCommandNavigate } from "@/features/actions/itemCommands";
 import { bindItemActionsRuntime } from "@/features/actions/useItemActions";
 import { DialogHost } from "@/features/dialogs/DialogHost";
@@ -101,9 +101,9 @@ export function AppShell() {
   const mobileSidebarOpen = useShellState((s) => s.mobileSidebarOpen);
   const sidebarWidth = useShellState((s) => s.sidebarWidth);
 
-  // A failed session probe must be visible and retryable; rendering
-  // `null` here left the user staring at a blank page with no way out.
-  if (me.isError) {
+  // A failed session probe must be visible and retryable — but only when
+  // there is no cached session to render (see `sessionUnavailable`).
+  if (sessionUnavailable({ isError: me.isError, hasData: !!me.data })) {
     return (
       <div className="grid h-dvh place-items-center bg-background p-6 text-center">
         <div className="flex max-w-sm flex-col items-center gap-3">

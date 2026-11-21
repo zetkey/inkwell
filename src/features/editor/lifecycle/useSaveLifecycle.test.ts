@@ -15,10 +15,6 @@ interface NotesBlob {
   source: string;
 }
 
-interface Loaded {
-  meta: { version: number };
-}
-
 let api: UseSaveLifecycleResult | null = null;
 let root: Root | null = null;
 
@@ -29,7 +25,7 @@ function Probe({
   save: (version: number, blob: NotesBlob) => Promise<{ version: number }>;
   onConflict?: () => void;
 }) {
-  api = useSaveLifecycle<NotesBlob, Loaded>({
+  api = useSaveLifecycle<NotesBlob>({
     initialVersion: 1,
     initialFingerprint: "base",
     readOnly: false,
@@ -93,7 +89,7 @@ describe("useSaveLifecycle", () => {
     expect(api?.isDirty).toBe(false);
   });
 
-  it("keeps local edits dirty on 409 and never reloads on its own", async () => {
+  it("pauses saves after 409 until an explicit reload or discard", async () => {
     const save = vi.fn(async (_version: number, _blob: NotesBlob) => {
       throw new ApiError(409, "version conflict");
     });
@@ -113,15 +109,57 @@ describe("useSaveLifecycle", () => {
     // still treat the editor as dirty.
     expect(api?.isDirty).toBe(true);
 
-    // No silent reload: the next attempt still uses the original
-    // If-Match version (a reload would have advanced it).
+    // Paused: further changes never schedule another doomed PUT.
+    await act(async () => {
+      lifecycle.notifyChange();
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(save).toHaveBeenCalledTimes(1);
+
+    // "Keep editing" + ⌘S: no network, banner re-surfaces (onConflict).
+    let ok = true;
+    await act(async () => {
+      ok = await lifecycle.saveNow();
+    });
+    expect(ok).toBe(false);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(onConflict).toHaveBeenCalledTimes(2);
+
+    // Explicit reload (reset) clears the pause and adopts the new version.
+    await act(async () => {
+      lifecycle.reset(9, "base");
+    });
     await act(async () => {
       await lifecycle.saveNow();
     });
     expect(save).toHaveBeenCalledTimes(2);
-    expect(save.mock.calls[0][0]).toBe(1);
-    expect(save.mock.calls[1][0]).toBe(1);
-    expect(api?.isDirty).toBe(true);
+    expect(save.mock.calls[1][0]).toBe(9);
+  });
+
+  it("discard clears the conflict pause", async () => {
+    let failing = true;
+    const save = vi.fn(async (_version: number, _blob: NotesBlob) => {
+      if (failing) throw new ApiError(409, "version conflict");
+      return { version: 2 };
+    });
+    const lifecycle = await mount({ save });
+
+    await act(async () => {
+      lifecycle.notifyChange();
+      await vi.advanceTimersByTimeAsync(2_600);
+    });
+    expect(api?.status).toBe("error");
+
+    await act(async () => {
+      lifecycle.discardPendingLocalWork();
+    });
+    failing = false;
+    snapshot.current = { fp: "v2", blob: { kind: "notes", source: "b" } };
+    await act(async () => {
+      await lifecycle.saveNow();
+    });
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(api?.status).toBe("saved");
   });
 
   it("cannot cancel a save that is already in flight", async () => {

@@ -262,19 +262,32 @@ function downloadExtensionForKind(kind: FileKind): "excalidraw" | "drawio" | "zi
   }
 }
 
+/** A syntactically valid single `bytes=` range, or null to serve the whole
+ *  object (no header, multi-range, or junk). R2 validates and clamps the
+ *  range itself; this only decides whether asking for one is sensible. */
+function singleByteRange(request: Request | undefined): string | null {
+  const raw = request?.headers.get("range");
+  if (!raw) return null;
+  const value = raw.trim();
+  const m = /^bytes=(\d*)-(\d*)$/.exec(value);
+  if (!m || (m[1] === "" && m[2] === "")) return null;
+  return value;
+}
+
 export async function streamRawFile(
   env: { R2: R2Bucket },
   row: FileRow,
   opts: { request?: Request; download?: boolean } = {},
 ): Promise<Response> {
-  const obj = await env.R2.get(r2FileKey(row.id));
-  if (!obj) return errorResponse(404, "file blob missing in R2");
+  const key = r2FileKey(row.id);
   const mime = safeMime(row.mime);
   const headers: Record<string, string> = {
     "content-type": mime,
     "x-content-type-options": "nosniff",
     "cache-control": "no-store",
     etag: `"${row.version}"`,
+    // Uploaded files can be large (100 MB); media/PDF viewers need seeking.
+    "accept-ranges": "bytes",
   };
   if (isActiveMime(mime)) {
     headers["content-security-policy"] = "sandbox";
@@ -283,10 +296,41 @@ export async function streamRawFile(
     // `row.name` already carries the user's extension; no suffix is added.
     headers["content-disposition"] = attachmentDisposition(row.name);
   }
-  const range = opts.request?.headers.get("range");
-  if (range) {
-    // Minimal: ignore range, serve full.
+
+  const range = singleByteRange(opts.request);
+  if (range === null) {
+    const obj = await env.R2.get(key);
+    if (!obj) return errorResponse(404, "file blob missing in R2");
+    return new Response(obj.body, { headers });
   }
+
+  let obj: R2ObjectBody | null;
+  try {
+    obj = await env.R2.get(key, { range: new Headers({ range }) });
+  } catch {
+    // R2 throws for a range it cannot satisfy; report 416 with the size.
+    const head = await env.R2.head(key).catch(() => null);
+    if (!head) return errorResponse(404, "file blob missing in R2");
+    headers["content-range"] = `bytes */${head.size}`;
+    headers["content-length"] = "0";
+    return new Response(null, { status: 416, headers });
+  }
+  if (!obj) return errorResponse(404, "file blob missing in R2");
+
+  const part = obj.range;
+  if (
+    part &&
+    "offset" in part &&
+    typeof part.offset === "number" &&
+    "length" in part &&
+    typeof part.length === "number" &&
+    part.length > 0
+  ) {
+    headers["content-range"] = `bytes ${part.offset}-${part.offset + part.length - 1}/${obj.size}`;
+    headers["content-length"] = String(part.length);
+    return new Response(obj.body, { status: 206, headers });
+  }
+  // R2 ignored the header (multi-range, empty object): serve the whole body.
   return new Response(obj.body, { headers });
 }
 

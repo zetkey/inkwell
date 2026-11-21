@@ -139,6 +139,23 @@ describe("useWorkingCopy", () => {
     expect(api?.loaded).toBeNull();
   });
 
+  it("keeps the live blob when our own save returns a new one", async () => {
+    const t = harness();
+    const initial = loadedFile("file-a", 3);
+    const wc = await mount(t.transport, initial);
+    const saved: FileBlob = { kind: "notes", format: "markdown-v1", source: "typed" };
+
+    await act(async () => {
+      await wc.save(3, saved);
+    });
+
+    // Meta advances, but the mounted editor's blob reference must not:
+    // a new reference would make the editors re-seed themselves and drop
+    // keystrokes typed while the PUT was in flight.
+    expect(api?.loaded?.meta.version).toBe(4);
+    expect(api?.loaded?.blob).toBe(initial.blob);
+  });
+
   it("does not overwrite a file the user moved to mid-save", async () => {
     const t = harness({ deferred: true });
     const wc = await mount(t.transport, loadedFile("file-a", 3));

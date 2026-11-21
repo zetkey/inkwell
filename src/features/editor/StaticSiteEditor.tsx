@@ -75,6 +75,7 @@ import {
   isImageAsset,
   isTextAsset,
   MAX_EDITABLE_BYTES,
+  pruneEditsToPaths,
   TEMPLATE_HTML,
 } from "./static-site/sitePaths";
 import { UploadPanel } from "./static-site/UploadPanel";
@@ -173,6 +174,7 @@ export default function StaticSiteEditor({
   const [loadErrors, setLoadErrors] = useState<Record<string, string>>({});
   const [epoch, setEpoch] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const editsRef = useRef(edits);
   editsRef.current = edits;
@@ -248,11 +250,7 @@ export default function StaticSiteEditor({
         setEpoch((n) => n + 1);
       }
       // Forget edits for files that no longer exist.
-      const live = new Set(result.manifest.assets.map((a) => a.path));
-      setEdits((prev) => {
-        const keep = Object.entries(prev).filter(([p]) => live.has(p));
-        return keep.length === Object.keys(prev).length ? prev : Object.fromEntries(keep);
-      });
+      setEdits((prev) => pruneEditsToPaths(prev, result.manifest.assets));
       qc.setQueryData(keys.files.manifest(id), result.manifest);
       qc.invalidateQueries({ queryKey: ["files", "list"] });
       qc.invalidateQueries({ queryKey: ["folders", "list"] });
@@ -266,6 +264,7 @@ export default function StaticSiteEditor({
   // uncommitted code edits stay in `edits` and can be saved again against
   // the new version.
   const refreshAfterConflict = useCallback(async () => {
+    setRefreshing(true);
     try {
       const [fresh, meta] = await Promise.all([files.load(id), files.meta(id)]);
       const blob = coerceManifest(fresh.blob);
@@ -274,6 +273,9 @@ export default function StaticSiteEditor({
       setLoadErrors({});
       setEpoch((n) => n + 1);
       setSaveError(null);
+      // Files deleted by the other client must not be resurrected by the
+      // next save: keep only edits whose path is still in the manifest.
+      setEdits((prev) => pruneEditsToPaths(prev, blob.assets));
       qc.setQueryData<LoadedFile>(keys.files.detail(id), fresh);
       qc.setQueryData(keys.files.manifest(id), blob);
       onManifestChanged?.(blob, meta);
@@ -281,6 +283,8 @@ export default function StaticSiteEditor({
       setSaveError(
         "Conflict: this site was changed elsewhere, and refreshing failed. Reload the page.",
       );
+    } finally {
+      setRefreshing(false);
     }
   }, [id, onManifestChanged, qc]);
 
@@ -376,6 +380,7 @@ export default function StaticSiteEditor({
       : null;
   const mutating =
     saving ||
+    refreshing ||
     uploadFilesMutation.isPending ||
     uploadZipMutation.isPending ||
     setEntryMutation.isPending ||
@@ -386,7 +391,10 @@ export default function StaticSiteEditor({
   versionRef.current = version;
 
   const saveSource = useCallback(async (): Promise<boolean> => {
-    if (!writable) return true;
+    // Another mutation (upload/delete/entry/refresh) is in flight and may
+    // hold a different `If-Match`; queue nothing and let the caller show
+    // the failure instead of racing two writes.
+    if (!writable || mutating) return false;
     const pendingEdits = editsRef.current;
     const paths = Object.keys(pendingEdits);
     if (paths.length === 0) return true;
@@ -428,7 +436,7 @@ export default function StaticSiteEditor({
     } finally {
       setSaving(false);
     }
-  }, [id, onMutated, refreshAfterConflict, writable]);
+  }, [id, mutating, onMutated, refreshAfterConflict, writable]);
 
   const discardSource = useCallback(() => {
     setEdits({});
@@ -582,14 +590,24 @@ export default function StaticSiteEditor({
     () => ({
       status,
       errorMessage: saveError,
-      saveNow: writable ? saveSource : null,
+      saveNow: writable && !mutating ? saveSource : null,
       flush: saveSource,
       discard: discardSource,
       requestLeave,
       exporters,
       toolbar,
     }),
-    [status, saveError, writable, saveSource, discardSource, requestLeave, exporters, toolbar],
+    [
+      status,
+      saveError,
+      writable,
+      mutating,
+      saveSource,
+      discardSource,
+      requestLeave,
+      exporters,
+      toolbar,
+    ],
   );
 
   // ── Selected-file buffer ─────────────────────────────────────────
@@ -714,8 +732,13 @@ export default function StaticSiteEditor({
                   busy={mutating}
                   onChange={(t) => onEdit(selectedAsset.path, t)}
                   onRefreshPreview={() => {
-                    if (dirtyRef.current) void saveSource().then(() => setMode("preview"));
-                    else setMode("preview");
+                    if (dirtyRef.current) {
+                      void saveSource().then((ok) => {
+                        if (ok) setMode("preview");
+                      });
+                    } else {
+                      setMode("preview");
+                    }
                   }}
                   onSetEntry={() => setEntryMutation.mutate(selectedAsset.path)}
                   onDelete={() => setConfirmDelete(selectedAsset.path)}

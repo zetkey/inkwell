@@ -44,6 +44,17 @@ export function useMe() {
   });
 }
 
+/**
+ * Whether a failed session probe should replace the app shell.
+ *
+ * React Query keeps `data` and sets `isError` when a *background* refetch
+ * fails, so gating on `isError` alone blanked the app for a cached,
+ * signed-in user. Only an error with nothing cached is unrecoverable.
+ */
+export function sessionUnavailable(state: { isError: boolean; hasData: boolean }): boolean {
+  return state.isError && !state.hasData;
+}
+
 export function useLogin() {
   const qc = useQueryClient();
   return useMutation<User, ApiError, { email: string; password: string }>({
