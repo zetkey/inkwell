@@ -38,14 +38,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { openShortcutSheet } from "@/components/shell/shellStore";
 import { useFile } from "@/data/files";
 import { itemActions } from "@/features/actions/useItemActions";
-import {
-  ApiError,
-  type FileBlob,
-  type FilesQuery,
-  files,
-  type ItemRef,
-  type LoadedFile,
-} from "@/lib/api/client";
+import { ApiError, type FilesQuery, files, type ItemRef, type LoadedFile } from "@/lib/api/client";
 import { keys } from "@/lib/api/query-keys";
 import type { Command } from "@/lib/commands/registry";
 import { errorMessage } from "@/lib/errors";
@@ -54,7 +47,7 @@ import { EditorErrorState, EditorLoadingState, EditorSuspense } from "./EditorCh
 import { EditorHeader } from "./EditorHeader";
 import { EditorOverlays } from "./EditorOverlays";
 import type { EditorHeaderBridge, RenderEditorHeader } from "./editorHeaderBridge";
-import { lastLoadedId, saveTarget } from "./saveTarget";
+import { useWorkingCopy } from "./useWorkingCopy";
 
 const DrawioEditor = lazy(() => import("./DrawioEditor"));
 const ExcalidrawEditor = lazy(() => import("./ExcalidrawEditor"));
@@ -71,20 +64,52 @@ export function EditorPage() {
   const qc = useQueryClient();
   const fileQuery = useFile(id);
   const navigate = useNavigate();
-  const [loaded, setLoaded] = useState<LoadedFile | null>(null);
+  // The working copy, its sticky save target and 409 recovery live in one
+  // shared hook (see `useWorkingCopy`).
+  const {
+    loaded,
+    setLoaded,
+    conflict,
+    setConflict,
+    getTarget,
+    editorKey,
+    bumpEditorKey,
+    save,
+    reload,
+    remountAfterConflict,
+  } = useWorkingCopy({
+    save: (target, version, blob) => files.save(target, version, blob),
+    load: (target) => files.load(target),
+    cacheKey: (target) => keys.files.detail(target),
+    nextLoaded: (prev, meta, blob) => ({
+      meta: {
+        id: prev.meta.id,
+        name: meta.name,
+        kind: meta.kind,
+        version: meta.version,
+        updatedAt: meta.updatedAt,
+        folderId: prev.meta.folderId,
+        // Once we've saved at least once, the editor's thumb pipeline will
+        // have shipped (or is about to ship) a thumb. Server `loadRow` is
+        // the source of truth on next cold load.
+        hasThumb: prev.meta.hasThumb,
+        starredAt: prev.meta.starredAt ?? meta.starredAt ?? null,
+      },
+      blob,
+      permission: "write",
+      allowDownload: true,
+      sharedBy: null,
+      shareExpiresAt: null,
+    }),
+    onSaved: () => {
+      // Refresh the explorer rows; scoped to lists so the active detail query
+      // does not refetch on every save.
+      qc.invalidateQueries({ queryKey: ["files", "list"] });
+      qc.invalidateQueries({ queryKey: ["folders", "list"] });
+    },
+  });
   const loadedRef = useRef(loaded);
   loadedRef.current = loaded;
-  // Sticky id of the last real working copy. It survives the loading-state
-  // render and this page's cleanup (both run before the editor's unmount
-  // flush), which is when `loaded` is already null.
-  const targetRef = useRef<string | null>(null);
-  targetRef.current = lastLoadedId(targetRef.current, loaded);
-  // Set when the save lifecycle hit a 409 and re-fetched: shows the
-  // non-blocking conflict banner in the header.
-  const [conflict, setConflict] = useState(false);
-  // Bumped by the conflict banner's Reload to remount the editor with
-  // the freshly loaded copy.
-  const [editorKey, setEditorKey] = useState(0);
   // Optimistic star state until the next detail refetch confirms it.
   const [starOverride, setStarOverride] = useState<{ id: string; starred: boolean } | null>(null);
   // Bumped to start the header's inline rename (palette "Rename", F2).
@@ -101,7 +126,7 @@ export function EditorPage() {
   useEffect(() => {
     if (loaded) return;
     if (fileQuery.data) setLoaded(fileQuery.data);
-  }, [fileQuery.data, loaded]);
+  }, [fileQuery.data, loaded, setLoaded]);
 
   // Metadata-only mirror of later detail refetches (see file header).
   // If a refetch raced a save and cached an older version than ours,
@@ -128,7 +153,7 @@ export function EditorPage() {
         ? { ...prev, meta: { ...prev.meta, name, folderId, starredAt } }
         : prev,
     );
-  }, [fileQuery.data, qc]);
+  }, [fileQuery.data, qc, setLoaded]);
 
   // When navigating to a *different* file, reset the working copy so the
   // seed effect above re-runs against the new query data.
@@ -144,9 +169,10 @@ export function EditorPage() {
       setLoaded(null);
       setConflict(false);
       setStarOverride(null);
+      bumpEditorKey();
     }
     prevIdRef.current = id;
-  }, [id]);
+  }, [id, setLoaded, setConflict, bumpEditorKey]);
 
   // Keep the folder listing warm: the shared item actions resolve names,
   // tags and parents from list caches (otherwise they fetch the whole
@@ -161,92 +187,15 @@ export function EditorPage() {
 
   const starred = starOverride?.id === id ? starOverride.starred : loaded?.meta.starredAt != null;
 
-  // A 409 reload swaps the scene under a live Excalidraw canvas, which
-  // only reads `initialData` on mount (drawio/markdown re-seed from
-  // `loaded` instead). Remount so the canvas — and the collab hook's
-  // baseline — match the fresh server version.
-  const remountAfterConflict = useCallback((ls: LoadedFile) => {
-    // The conflict may belong to a file the route already left.
-    if (loadedRef.current?.meta.id !== ls.meta.id) return;
-    setLoaded(ls);
-    setEditorKey((k) => k + 1);
-  }, []);
-
-  // Reload after a 409 conflict: bypass cache and force a fresh fetch.
-  // Only the save lifecycle's conflict path calls this. The working copy
-  // names the file (see `save`); the route param may already be the next
-  // file when this runs.
-  const reload = useCallback(async () => {
-    const target = saveTarget(targetRef.current);
-    const ls = await qc.fetchQuery({
-      queryKey: keys.files.detail(target),
-      queryFn: () => files.load(target),
-      staleTime: 0,
-    });
-    setLoaded((prev) => (prev && prev.meta.id === target ? ls : prev));
-    if (loadedRef.current?.meta.id === target) setConflict(true);
-    return ls;
-  }, [qc]);
-
-  // Save: throws ApiError(409) on version conflict so the editor's
-  // autosave loop can react. On success update both local state and the
-  // cached file detail row so revisiting this editor doesn't resurrect
-  // an old version from React Query's staleTime/gcTime Infinity cache.
-  const save = useCallback(
-    async (version: number, blob: FileBlob) => {
-      // The PUT must land on the file whose scene the editor holds — the
-      // working copy, not the route param: on A→B this closure is already
-      // B while the editor still shows A, and a flush would overwrite B
-      // with A's scene when the versions happen to match.
-      const target = saveTarget(targetRef.current);
-      const m = await files.save(target, version, blob);
-      const prev = loadedRef.current;
-      // The PUT succeeded, but the working copy may have moved on. Writing
-      // this scene into it would corrupt what's on screen; invalidate
-      // instead so a revisit refetches the saved version.
-      if (!prev || prev.meta.id !== target) {
-        qc.invalidateQueries({ queryKey: keys.files.detail(target), exact: true });
-        return { version: m.version };
-      }
-      const nextLoaded: LoadedFile = {
-        meta: {
-          id: target,
-          name: m.name,
-          kind: m.kind,
-          version: m.version,
-          updatedAt: m.updatedAt,
-          folderId: prev.meta.folderId,
-          // Once we've saved at least once, the editor's thumb pipeline
-          // will have shipped (or is about to ship) a thumb. Server
-          // `loadRow` is the source of truth on next cold load.
-          hasThumb: prev.meta.hasThumb,
-          starredAt: prev.meta.starredAt ?? m.starredAt ?? null,
-        },
-        blob,
-        permission: "write",
-        allowDownload: true,
-        sharedBy: null,
-        shareExpiresAt: null,
-      };
-      setLoaded((cur) => (cur && cur.meta.id === target ? nextLoaded : cur));
-      qc.setQueryData(keys.files.detail(target), nextLoaded);
-      // Update cached file-list rows so explorer views show fresh data.
-      // Scope to list queries only — invalidating `keys.files.all` would
-      // also match `keys.files.detail(target)` (prefix match) and trigger a
-      // refetch of the active file on every save.
-      qc.invalidateQueries({ queryKey: ["files", "list"] });
-      qc.invalidateQueries({ queryKey: ["folders", "list"] });
-      return { version: m.version };
+  const saveThumb = useCallback(
+    async (svg: string) => {
+      // Thumbnails follow the same working copy as the save, not the route.
+      const target = getTarget();
+      if (!target) return;
+      await files.putThumb(target, svg);
     },
-    [qc],
+    [getTarget],
   );
-
-  const saveThumb = useCallback(async (svg: string) => {
-    // Thumbnails follow the same working copy as the save, not the route.
-    const target = targetRef.current;
-    if (!target) return;
-    await files.putThumb(target, svg);
-  }, []);
 
   // After a thumb upload, the server's `thumb_updated_at` advances.
   // Explorer cards build their `<img src>` from it, so list queries must
@@ -314,7 +263,7 @@ export function EditorPage() {
       setLoaded((prev) => (prev ? { ...prev, meta: { ...prev.meta, name: next.trim() } } : prev));
       return true;
     },
-    [ref],
+    [ref, setLoaded],
   );
 
   // Palette / registry overrides with editor semantics. Only chords the
@@ -422,7 +371,7 @@ export function EditorPage() {
                 onReload: () => {
                   bridge.discard();
                   setConflict(false);
-                  setEditorKey((k) => k + 1);
+                  bumpEditorKey();
                 },
                 onDismiss: () => setConflict(false),
               }

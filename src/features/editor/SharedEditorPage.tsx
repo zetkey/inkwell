@@ -10,11 +10,10 @@
 // Read-only shares get the canvas in view mode; only `collab` links open
 // the realtime socket.
 
-import { useQueryClient } from "@tanstack/react-query";
-import { lazy, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, useEffect, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useSharedFile } from "@/data/shares";
-import type { FileBlob, LoadedFile } from "@/lib/api/client";
+import type { LoadedFile } from "@/lib/api/client";
 import { shares } from "@/lib/api/client";
 import { keys } from "@/lib/api/query-keys";
 import { errorMessage } from "@/lib/errors";
@@ -25,7 +24,7 @@ import { EditorErrorState, EditorLoadingState, EditorSuspense } from "./EditorCh
 import { EditorHeader } from "./EditorHeader";
 import type { RenderEditorHeader } from "./editorHeaderBridge";
 import { SharedStaticSitePreviewRedirect } from "./StaticSitePreviewRedirect";
-import { lastLoadedId, saveTarget } from "./saveTarget";
+import { useWorkingCopy } from "./useWorkingCopy";
 
 const DrawioEditor = lazy(() => import("@/features/editor/DrawioEditor"));
 const ExcalidrawEditor = lazy(() => import("@/features/editor/ExcalidrawEditor"));
@@ -40,24 +39,61 @@ interface SharedEditorProps {
 export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
   const params = useParams<{ token: string; fileId?: string }>();
   const navigate = useNavigate();
-  const qc = useQueryClient();
   const token = params.token || "";
   const fileId = params.fileId; // present only on folder-share routes
 
   // Skip the network when the parent page already resolved the file.
   const fileQuery = useSharedFile(preloaded ? "" : token, fileId);
 
-  const [loaded, setLoaded] = useState<LoadedFile | null>(preloaded ?? null);
-  // Non-blocking conflict banner after a 409 → reload (see EditorPage).
-  const [conflict, setConflict] = useState(false);
-  const [editorKey, setEditorKey] = useState(0);
+  // Working copy + sticky save target + 409 recovery (see `useWorkingCopy`).
+  // Seeded from `preloaded` when the landing page already resolved the file.
+  const {
+    loaded,
+    setLoaded,
+    conflict,
+    setConflict,
+    editorKey,
+    bumpEditorKey,
+    save,
+    reload,
+    remountAfterConflict,
+  } = useWorkingCopy(
+    {
+      save: (target, version, blob) =>
+        fileId
+          ? shares.saveFolderFile(token, target, version, blob)
+          : shares.save(token, version, blob),
+      load: (target) => (fileId ? shares.loadFolderFile(token, target) : shares.load(token)),
+      cacheKey: (target) =>
+        fileId ? keys.publicShare.token(token, target) : keys.publicShare.token(token),
+      nextLoaded: (prev, meta, blob) => ({
+        meta: {
+          id: prev.meta.id,
+          name: meta.name,
+          kind: meta.kind,
+          version: meta.version,
+          updatedAt: meta.updatedAt,
+          folderId: prev.meta.folderId,
+          hasThumb: prev.meta.hasThumb,
+          starredAt: prev.meta.starredAt ?? meta.starredAt ?? null,
+        },
+        blob,
+        permission: prev.permission,
+        allowDownload: prev.allowDownload,
+        sharedBy: prev.sharedBy,
+        shareExpiresAt: prev.shareExpiresAt,
+      }),
+    },
+    preloaded ?? null,
+  );
+
   const { mode: themeMode, setMode: setThemeMode } = useTheme();
 
   // Seed working copy on first arrival; thereafter the editor owns it.
   useEffect(() => {
     if (loaded) return;
     if (fileQuery.data) setLoaded(fileQuery.data);
-  }, [fileQuery.data, loaded]);
+  }, [fileQuery.data, loaded, setLoaded]);
 
   // Folder-share routes reuse this page for another file; clear the working
   // copy on a real transition so the seed effect above loads the new one and
@@ -68,87 +104,10 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
     if (prevFileIdRef.current !== null && prevFileIdRef.current !== next) {
       setLoaded(null);
       setConflict(false);
-      setEditorKey((k) => k + 1);
+      bumpEditorKey();
     }
     prevFileIdRef.current = next;
-  }, [fileId]);
-
-  const loadedRef = useRef(loaded);
-  loadedRef.current = loaded;
-  // Sticky id of the last real working copy (see `saveTarget`): the route
-  // param and `loaded` are both unreliable when the unmount flush runs.
-  const targetRef = useRef<string | null>(null);
-  targetRef.current = lastLoadedId(targetRef.current, loaded);
-
-  // Force-fresh reload after a 409 conflict. The working copy names the
-  // file (see `save`); a folder-share route param may already be the next
-  // file when this runs, so the fetch and the cache key follow `target`.
-  const reload = useCallback(async () => {
-    const target = saveTarget(targetRef.current);
-    const cacheKey = fileId ? keys.publicShare.token(token, target) : keys.publicShare.token(token);
-    const ls = await qc.fetchQuery({
-      queryKey: cacheKey,
-      queryFn: () => (fileId ? shares.loadFolderFile(token, target) : shares.load(token)),
-      staleTime: 0,
-    });
-    if (loadedRef.current?.meta.id === target) {
-      setLoaded(ls);
-      setConflict(true);
-    }
-    return ls;
-  }, [qc, token, fileId]);
-
-  const save = useCallback(
-    async (version: number, blob: FileBlob) => {
-      // Write the file the visitor actually has open, not the route param:
-      // on A→B this closure may already be B while the working copy (and
-      // the scene) is still A.
-      const target = saveTarget(targetRef.current);
-      const m = fileId
-        ? await shares.saveFolderFile(token, target, version, blob)
-        : await shares.save(token, version, blob);
-      const prev = loadedRef.current;
-      const cacheKey = fileId
-        ? keys.publicShare.token(token, target)
-        : keys.publicShare.token(token);
-      // The PUT succeeded, but the visitor may already be on another
-      // shared file. Don't write this scene into it.
-      if (!prev || prev.meta.id !== target) {
-        qc.invalidateQueries({ queryKey: cacheKey, exact: true });
-        return { version: m.version };
-      }
-      const nextLoaded: LoadedFile = {
-        meta: {
-          id: target,
-          name: m.name,
-          kind: m.kind,
-          version: m.version,
-          updatedAt: m.updatedAt,
-          folderId: prev.meta.folderId,
-          hasThumb: prev.meta.hasThumb,
-          starredAt: prev.meta.starredAt ?? m.starredAt ?? null,
-        },
-        blob,
-        permission: prev.permission,
-        allowDownload: prev.allowDownload,
-        sharedBy: prev.sharedBy,
-        shareExpiresAt: prev.shareExpiresAt,
-      };
-      setLoaded((cur) => (cur && cur.meta.id === target ? nextLoaded : cur));
-      qc.setQueryData(cacheKey, nextLoaded);
-      return { version: m.version };
-    },
-    [qc, token, fileId],
-  );
-
-  // Excalidraw only reads `initialData` on mount; remount after a 409
-  // reload so the canvas and the collab baseline match the fresh scene.
-  const remountAfterConflict = useCallback((ls: LoadedFile) => {
-    // The conflict may belong to a file the visitor already left.
-    if (loadedRef.current?.meta.id !== ls.meta.id) return;
-    setLoaded(ls);
-    setEditorKey((k) => k + 1);
-  }, []);
+  }, [fileId, setLoaded, setConflict, bumpEditorKey]);
 
   if (fileQuery.isError) {
     return (
@@ -214,7 +173,7 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
               onReload: () => {
                 bridge.discard();
                 setConflict(false);
-                setEditorKey((k) => k + 1);
+                bumpEditorKey();
               },
               onDismiss: () => setConflict(false),
             }

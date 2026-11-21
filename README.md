@@ -270,8 +270,14 @@ comfortably, and R2 has no egress fees.
 - **Static-site assets are capped separately:** 25 MiB per asset, 25 MiB
   per site, and a single-ZIP download of up to 3 MiB (store-only, so the
   CPU cost stays bounded).
-- **No real-time collaboration.** Single-writer per file; last-write-wins
-  across tabs (with a `version` check that catches the common case).
+- **Real-time collaboration is Excalidraw-only.** Owner editors and share
+  links in `Live` mode join a Durable Object room per file (free-plan
+  quota); notes, draw.io and static-site editors stay single-writer, where
+  a `version` check catches the common concurrent-save case.
+- **Collab frames are capped at 4 MiB each.** Scenes over the snapshot
+  budget (3 MiB) travel as batched `elements` frames, inline images ride
+  only when they fit one frame, and an element too large for a single
+  frame is skipped instead of killing the room for everyone.
 - **No password recovery flow.** Admins can re-issue an invite; there is
   no email-bound reset.
 - **No touch drag-and-drop.** On touch devices, use the Move dialog or the

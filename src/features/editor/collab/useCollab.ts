@@ -189,7 +189,7 @@ export function useCollab({
     // as many images as still fit. Anything left out stays un-sent, so a
     // later, smaller frame can deliver it.
     // shortcut: the `order` list is not measured; it is ids only and the
-    // 24 MiB budget leaves 8 MiB of headroom under the 32 MiB cap.
+    // 3 MiB budget leaves 1 MiB of headroom under the room's 4 MiB cap.
     const plan = planDelta(changed, pendingFiles);
     // One paste can be bigger than a frame on its own: send nothing and keep
     // the pending scene, so the next, smaller change ships the diff.
@@ -277,10 +277,10 @@ export function useCollab({
       return;
     }
 
-    // shortcut: inline base64 images dominate the frame (32 MiB cap). Above
-    // the 24 MiB budget the snapshot ships geometry only and leaves the
+    // shortcut: inline base64 images dominate the frame (4 MiB cap). Above
+    // the 3 MiB budget the snapshot ships geometry only and leaves the
     // files un-sent, so the next delta delivers them in budget-sized
-    // batches — until then a peer keeps whatever images it already had.
+    // frames — until then a peer keeps whatever images it already had.
     // Upgrade to chunked image transfer if live delivery on join matters.
     const includeFiles = fileIds.length > 0 && plan.includeFiles;
     const delivered = send({

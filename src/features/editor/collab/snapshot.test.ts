@@ -62,10 +62,10 @@ describe("planSnapshot", () => {
 
 describe("pickFilesForFrame", () => {
   it("only includes the files that fit, leaving the rest undelivered", () => {
-    const twentyMiB = 20 * 1024 * 1024;
+    const twoMiB = 2 * 1024 * 1024;
     const pending = {
-      big1: { dataURL: "a".repeat(twentyMiB) },
-      big2: { dataURL: "b".repeat(twentyMiB) },
+      big1: { dataURL: "a".repeat(twoMiB) },
+      big2: { dataURL: "b".repeat(twoMiB) },
     };
 
     const { files, filesBytes } = pickFilesForFrame(pending, 1_024);

@@ -1,17 +1,21 @@
 // Sizing for collab frames.
 //
 // A scene snapshot or a delta carries the whole image payload inline
-// (base64) in one text frame, and the room's frame cap is 32 MiB (see
-// AGENTS.md). Image-heavy boards can exceed it and the socket is closed
-// (1009), which looks like a permanent disconnect. Payloads are measured
-// in UTF-8 bytes — `String.length` counts UTF-16 code units, so non-ASCII
-// labels (or base64 with multi-byte characters) would under-measure.
+// (base64) in one text frame. The room refuses any client frame over
+// `MAX_FRAME_CHARS` (4 MiB in the Durable Object), so a frame that big
+// just never arrives. Payloads are measured in UTF-8 bytes —
+// `String.length` counts UTF-16 code units, so non-ASCII labels (or
+// base64 with multi-byte characters) would under-measure.
 
-/** Stay under the 32 MiB frame cap with headroom for the JSON envelope. */
-export const COLLAB_SNAPSHOT_SAFE_BYTES = 24 * 1024 * 1024;
+/**
+ * Room frames are capped at 4 MiB by the Durable Object (`MAX_FRAME_CHARS`);
+ * stay under it with headroom for the JSON envelope. Anything measured in
+ * UTF-8 bytes here is >= the server's UTF-16 char count, so this is safe.
+ */
+export const COLLAB_SNAPSHOT_SAFE_BYTES = 3 * 1024 * 1024;
 
 /** One frame of a batched scene snapshot (see `batchElements`). */
-export const COLLAB_SNAPSHOT_BATCH_BYTES = 8 * 1024 * 1024;
+export const COLLAB_SNAPSHOT_BATCH_BYTES = 3 * 1024 * 1024;
 
 const textEncoder = new TextEncoder();
 
