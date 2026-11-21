@@ -21,6 +21,7 @@ import type { AppState, BinaryFiles, ExcalidrawImperativeAPI } from "@excalidraw
 import { type ReactNode, useCallback, useEffect, useMemo, useRef } from "react";
 import type { ExcalidrawFileBlob, FileBlob, LoadedFile } from "@/lib/api/client";
 import { useTheme } from "@/lib/theme";
+import { useCollab } from "./collab/useCollab";
 import type { EditorHeaderBridge, RenderEditorHeader } from "./editorHeaderBridge";
 import { renderExcalidrawThumbSvg } from "./excalidrawThumb";
 import { LeaveConfirmDialog } from "./lifecycle/LeaveConfirmDialog";
@@ -64,6 +65,11 @@ export interface ExcalidrawEditorProps {
   chrome?: ReactNode;
   /** Renders the page header above the canvas (see `EditorHeader`). */
   renderHeader?: RenderEditorHeader;
+  /**
+   * Collab endpoint path for share-token editors. Omit for the owner
+   * editor (defaults to `/api/files/:id/collab`).
+   */
+  collabPath?: string;
 }
 
 export default function ExcalidrawEditor({
@@ -75,6 +81,7 @@ export default function ExcalidrawEditor({
   reload,
   chrome,
   renderHeader,
+  collabPath,
 }: ExcalidrawEditorProps) {
   // Excalidraw invokes this callback synchronously from its class constructor.
   // Keeping the API in state would update this parent while its child is still
@@ -100,7 +107,18 @@ export default function ExcalidrawEditor({
   // hook reads this through `getLatest()` whenever it needs to
   // serialise a save.
   const latestSnapshotRef = useRef<ExcalidrawSnapshot | null>(initialSnapshot);
-  const readOnly = loaded.permission !== "write";
+  const readOnly = loaded.permission === "read";
+
+  // Realtime collab follows the editor's write permission; share editors
+  // reach their own endpoint through `collabPath`. The hook touches only the
+  // live Excalidraw API; save/lifecycle stay untouched.
+  const collab = useCollab({
+    fileId: loaded.meta.id,
+    enabled: !readOnly,
+    apiRef,
+    collabPath,
+  });
+  const { notifySceneChange } = collab;
 
   const fileNameRef = useRef(loaded.meta.name);
   fileNameRef.current = loaded.meta.name;
@@ -189,8 +207,9 @@ export default function ExcalidrawEditor({
       if (readOnly) return;
       latestSnapshotRef.current = makeExcalidrawSnapshot(elements, appState, files);
       lifecycle.notifyChange();
+      notifySceneChange(elements, files);
     },
-    [readOnly, lifecycle],
+    [readOnly, lifecycle, notifySceneChange],
   );
 
   // ─── In-app navigation guard ────────────────────────────────────────
@@ -237,6 +256,8 @@ export default function ExcalidrawEditor({
             excalidrawAPI={receiveApi}
             initialData={initial}
             onChange={onChange}
+            isCollaborating={collab.isCollaborating}
+            onPointerUpdate={collab.onPointerUpdate}
             viewModeEnabled={readOnly}
             theme={themeResolved}
             name={loaded.meta.name}

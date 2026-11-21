@@ -3,7 +3,8 @@
 //
 //   toolbar : [↑] breadcrumb (inside the shared subtree) · filter `/` ·
 //             Download all (if allowed) · Grid / Compact / List
-//   banner  : Shared by <name> · View only / Can edit · "label" · Sign in
+//   banner  : Shared by <name> · View only / Can edit / Live collaboration ·
+//             "label" · Sign in
 //   pane    : the explorer's GridView / CompactView / ListView, read-only
 //   status  : counts · selection
 //
@@ -19,6 +20,7 @@
 // files themselves (inside the editor), not create/delete here.
 
 import {
+  Activity01Icon,
   ArrowUp02Icon,
   Download01Icon,
   EyeIcon,
@@ -72,6 +74,7 @@ import { CompactView } from "@/features/explorer/views/CompactView";
 import { GridView } from "@/features/explorer/views/GridView";
 import { ListView } from "@/features/explorer/views/ListView";
 import { folderPath } from "@/features/folders/FolderTree";
+import { permissionLabel } from "@/features/sharing/shareStatus";
 import type { FolderMeta, FolderSharePayload } from "@/lib/api/client";
 import { shares } from "@/lib/api/client";
 import { copyToClipboard } from "@/lib/clipboard";
@@ -139,7 +142,7 @@ function SharedFolderExplorer({ token, payload }: { token: string; payload: Fold
   const [search, setSearch] = useSearchParams();
   const isMobile = useMediaQuery("(max-width: 767px)");
   const { share, root } = payload;
-  const writable = share.permission === "write";
+  const writable = share.permission !== "read";
   const allowDownload = share.allowDownload;
 
   const allFolders = useMemo(() => {
@@ -435,7 +438,9 @@ function SharedFolderExplorer({ token, payload }: { token: string; payload: Fold
         className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border bg-primary/[0.06] px-3 py-2 text-[12.5px] sm:px-4"
       >
         <HugeiconsIcon
-          icon={writable ? PencilEdit02Icon : EyeIcon}
+          icon={
+            share.permission === "collab" ? Activity01Icon : writable ? PencilEdit02Icon : EyeIcon
+          }
           strokeWidth={1.8}
           className="size-4 text-muted-foreground"
         />
@@ -449,7 +454,7 @@ function SharedFolderExplorer({ token, payload }: { token: string; payload: Fold
           )}
           {" · "}
           <span className="rounded-full bg-accent px-2 py-0.5 text-accent-foreground">
-            {writable ? "Can edit" : "View only"}
+            {permissionLabel(share.permission)}
           </span>
           {share.label ? <span className="text-muted-foreground"> · “{share.label}”</span> : null}
           {expiresPhrase(share.expiresAt ?? null) ? (
@@ -506,8 +511,12 @@ function SharedFolderExplorer({ token, payload }: { token: string; payload: Fold
         }
         right={
           <span className="hidden sm:inline">
-            {writable ? "Can edit files" : "Read-only"} · right-click for Open / Download / Copy
-            link
+            {share.permission === "collab"
+              ? "Live collaboration"
+              : writable
+                ? "Can edit files"
+                : "Read-only"}{" "}
+            · right-click for Open / Download / Copy link
           </span>
         }
       />

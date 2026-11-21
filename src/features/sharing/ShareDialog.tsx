@@ -42,7 +42,7 @@ import { cn } from "@/lib/utils";
 import { AllowDownloadField } from "./fields/AllowDownloadField";
 import { ExpiryChips, type ExpiryChoice } from "./fields/ExpiryChips";
 import { LabelField } from "./fields/LabelField";
-import { PermissionSegment } from "./fields/PermissionSegment";
+import { PERMISSION_HINTS, PermissionSegment } from "./fields/PermissionSegment";
 import { presetToExpiresAt, shareStatus, shortExpiry } from "./shareStatus";
 
 interface ShareDialogProps {
@@ -71,6 +71,10 @@ export function ShareDialog({
 }: ShareDialogProps) {
   const navigate = useNavigate();
   const lockedToRead = targetType === "file" && targetKind === "static-site";
+  // Live collaboration only has a realtime surface for Excalidraw. Folders
+  // stay enabled (some children may be drawings; the server validates).
+  const collabDisabled =
+    targetType === "file" && targetKind !== undefined && targetKind !== "excalidraw";
   const list = useShareList(targetType, targetId, open);
   const create = useCreateShare(targetType, targetId);
   const now = Date.now();
@@ -102,7 +106,7 @@ export function ShareDialog({
     try {
       const s = await create.mutateAsync({
         permission: perm,
-        allowDownload: perm === "write" ? true : allowDownload,
+        allowDownload: perm === "read" ? allowDownload : true,
         expiresAt: expiry === "custom" ? customAt : presetToExpiresAt(expiry, Date.now()),
         label: label.trim() || null,
       });
@@ -173,7 +177,11 @@ export function ShareDialog({
               value={lockedToRead ? "read" : permission}
               onChange={setPermission}
               lockedToRead={lockedToRead}
+              collabDisabled={collabDisabled}
             />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {PERMISSION_HINTS[lockedToRead ? "read" : permission]}
+            </p>
           </div>
           <span className="self-start pt-1 text-xs text-muted-foreground">Expires</span>
           <ExpiryChips

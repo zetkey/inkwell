@@ -27,7 +27,8 @@ import type { AppEnv } from "../middleware/types";
 import { createFile, putFileBlob } from "../services/file-blob";
 import { trashItems } from "../services/trash";
 import type { FilePreview, FolderRow, ShareRow } from "../types";
-import { normalizeFileKind, rowToFolderMeta, rowToMeta } from "../types";
+import { normalizeFileKind, rowToFolderMeta, rowToMeta, sharePermissionAllows } from "../types";
+import { forwardCollab, guestIdentity } from "./collab";
 
 const r = new Hono<AppEnv>();
 
@@ -55,7 +56,7 @@ r.get("/:token", requireShareToken(), async (c) => {
 });
 
 // File-share write.
-r.put("/:token", requireShareToken({ target: "file", needsWrite: true }), async (c) => {
+r.put("/:token", requireShareToken({ target: "file", needs: "edit" }), async (c) => {
   const tk = c.get("share");
   const file = await filesRepo.findByIdAnyOwner(c.env, tk.target_id);
   if (!file) return errorResponse(404, "file not found");
@@ -121,6 +122,43 @@ r.post(
   },
 );
 
+// ─── /api/share/:token/collab — realtime collaboration ────────────
+//
+// Only `collab` links may open a WebSocket (`write` = save without
+// realtime). The guest joins the SAME room as the owner
+// (`idFromName(file.id)`), so owner and share visitors see each other.
+// Identity is derived from the token, never from the client or cookies.
+//
+// shortcut: the token is validated at connect time only — revoking or
+// expiring a share does not close sockets that are already open.
+// Upgrade to per-event revalidation inside the DO if immediate
+// revocation matters.
+r.get("/:token/collab", requireShareToken({ target: "file" }), async (c) => {
+  const tk = c.get("share");
+  if (!sharePermissionAllows(tk.permission, "collab")) {
+    return errorResponse(403, "collab requires a collaboration link");
+  }
+  const file = await filesRepo.findByIdAnyOwner(c.env, tk.target_id);
+  if (file?.kind !== "excalidraw") return errorResponse(404, "file not found");
+  return await forwardCollab(c.env, c.req.raw, file.id, guestIdentity(tk.token));
+});
+
+// Folder-share analogue: the file must live inside the shared subtree.
+r.get("/:token/files/:fileId/collab", requireShareToken({ target: "folder" }), async (c) => {
+  const tk = c.get("share");
+  if (!sharePermissionAllows(tk.permission, "collab")) {
+    return errorResponse(403, "collab requires a collaboration link");
+  }
+  const fileId = c.req.param("fileId");
+  if (!fileId) return errorResponse(404, "file not in shared folder");
+  if (!(await foldersRepo.fileInSubtree(c.env, tk.owner, fileId, tk.target_id))) {
+    return errorResponse(404, "file not in shared folder");
+  }
+  const file = await filesRepo.findByIdAnyOwner(c.env, fileId);
+  if (file?.kind !== "excalidraw") return errorResponse(404, "file not found");
+  return await forwardCollab(c.env, c.req.raw, file.id, guestIdentity(tk.token));
+});
+
 // File-share download (file-share only, allow_download required).
 r.get(
   "/:token/download",
@@ -146,7 +184,7 @@ r.post(
   requireShareToken({
     target: "folder",
     targetMismatchMessage: "not a folder share",
-    needsWrite: true,
+    needs: "write",
   }),
   async (c) => {
     const tk = c.get("share");
@@ -242,7 +280,7 @@ r.get("/:token/files/:fileId/download", requireShareToken(), async (c) => {
   return await streamFileResponse(c.env, file, { download: true });
 });
 
-r.put("/:token/files/:fileId", requireShareToken({ needsWrite: true }), async (c) => {
+r.put("/:token/files/:fileId", requireShareToken({ needs: "edit" }), async (c) => {
   const tk = c.get("share");
   const fileId = c.req.param("fileId");
   if (!fileId) return errorResponse(404, "file not in shared folder");
@@ -254,7 +292,7 @@ r.put("/:token/files/:fileId", requireShareToken({ needsWrite: true }), async (c
   return await putFileBlob(c.env, file, c.req.raw);
 });
 
-r.delete("/:token/files/:fileId", requireShareToken({ needsWrite: true }), async (c) => {
+r.delete("/:token/files/:fileId", requireShareToken({ needs: "write" }), async (c) => {
   const tk = c.get("share");
   const fileId = c.req.param("fileId");
   if (!fileId) return errorResponse(404, "file not in shared folder");

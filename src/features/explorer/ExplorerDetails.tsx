@@ -21,6 +21,7 @@ import { useShareList } from "@/data/shares";
 import { useTags } from "@/data/tags";
 import { useItemMeta } from "@/features/actions/itemCache";
 import { itemActions } from "@/features/actions/useItemActions";
+import { PermBadge } from "@/features/library/ListTable";
 import type { FileMeta, FolderMeta, ItemRef } from "@/lib/api/client";
 import { runCommand } from "@/lib/commands/registry";
 import { expiresPhrase, fmtDateTime } from "@/lib/format";
@@ -269,16 +270,7 @@ function ShareLinks({ itemRef }: { itemRef: ItemRef }) {
               >
                 <HugeiconsIcon icon={Link04Icon} strokeWidth={2} className="size-3.5 shrink-0" />
                 <span className="min-w-0 flex-1 truncate">{s.label || "Share link"}</span>
-                <span
-                  className={cn(
-                    "rounded px-1.5 text-[10.5px]",
-                    s.permission === "write"
-                      ? "bg-accent text-accent-foreground"
-                      : "bg-muted text-muted-foreground",
-                  )}
-                >
-                  {s.permission === "write" ? "Edit" : "View"}
-                </span>
+                <PermBadge permission={s.permission} />
                 <span className="text-muted-foreground">
                   {expiresPhrase(s.expiresAt)?.replace("expires in ", "") ?? "∞"}
                 </span>

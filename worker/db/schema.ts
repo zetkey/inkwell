@@ -215,7 +215,7 @@ export const shares = sqliteTable(
       .references(() => users.id, { onDelete: "cascade" }),
     target_type: text("target_type", { enum: ["file", "folder"] }).notNull(),
     target_id: text("target_id").notNull(),
-    permission: text("permission", { enum: ["read", "write"] }).notNull(),
+    permission: text("permission", { enum: ["read", "write", "collab"] }).notNull(),
     allow_download: integer("allow_download", { mode: "boolean" }).notNull().default(true),
     label: text("label"),
     created_at: integer("created_at").notNull(),

@@ -3,11 +3,11 @@ main = "worker/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
-# Bind the Worker to inkwell.tlmtech.dev.
+# Bind the Worker to inkwell.zetkey.my.id.
 # `custom_domain = true` tells Cloudflare to manage the DNS record and TLS
-# cert automatically in the tlmtech.dev zone — no manual DNS work needed.
+# cert automatically in the zetkey.my.id zone — no manual DNS work needed.
 [[routes]]
-pattern = "inkwell.tlmtech.dev"
+pattern = "inkwell.zetkey.my.id"
 custom_domain = true
 
 # Serve the built React SPA from ./dist.
@@ -31,15 +31,28 @@ preview_bucket_name = "inkwell"
 [[d1_databases]]
 binding = "DB"
 database_name = "inkwell"
-database_id = "0f23be25-c480-42a6-981f-2cc13c2d7758"
+database_id = "f42f6c12-ef59-4b1d-9021-4c042193f38d"
 # Drizzle generates SQL into ./drizzle; wrangler tracks applied files in
 # the d1_migrations table inside D1.
 migrations_dir = "drizzle"
 
+# Durable Object namespace for realtime collaboration rooms.
+# One room per excalidraw file id — see worker/collab.ts.
+[[durable_objects.bindings]]
+name = "COLLAB"
+class_name = "CollabRoom"
+
+# Free plan only supports the SQLite-backed DO storage backend.
+# `new_classes` (KV-backed) is not available there, so this must stay
+# `new_sqlite_classes`.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CollabRoom"]
+
 # Non-secret config. Override per-env in [env.production.vars].
 [vars]
 # Comma-separated list of allowed origins for CORS (leave empty = same-origin only).
-# The SPA and API are served from the same Worker on inkwell.tlmtech.dev,
+# The SPA and API are served from the same Worker on inkwell.zetkey.my.id,
 # so same-origin (empty) is correct unless we add a separate frontend host.
 ALLOWED_ORIGINS = ""
 

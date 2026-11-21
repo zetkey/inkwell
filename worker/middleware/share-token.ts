@@ -8,7 +8,8 @@
 // Composable opts:
 //   * `target`: restrict to "file" or "folder" target. Mismatches return
 //     a tailored 404 message preserving the pre-Hono wording.
-//   * `needsWrite`: require permission === "write". Returns 403 on read.
+//   * `needs`: "edit" (save file content — write + collab links) or
+//     "write" (structural ops — write links only). Returns 403 otherwise.
 //
 // The middleware does NOT enforce per-target authorization beyond the
 // target-type check (e.g. "file lives inside this folder share's
@@ -17,12 +18,12 @@
 import type { MiddlewareHandler } from "hono";
 import * as sharesRepo from "../db/repos/shares";
 import { errorResponse } from "../lib/responses";
-import type { ShareTargetType } from "../types";
+import { type ShareTargetType, sharePermissionAllows } from "../types";
 import type { AppEnv } from "./types";
 
 interface ShareTokenOpts {
   target?: ShareTargetType;
-  needsWrite?: boolean;
+  needs?: "edit" | "write";
   /** Custom 404 message when the target type doesn't match. */
   targetMismatchMessage?: string;
 }
@@ -36,8 +37,9 @@ export function requireShareToken(opts: ShareTokenOpts = {}): MiddlewareHandler<
     if (opts.target && row.target_type !== opts.target) {
       return errorResponse(404, opts.targetMismatchMessage ?? "invalid or expired token");
     }
-    if (opts.needsWrite && row.permission !== "write") {
-      return errorResponse(403, "read-only token");
+    if (opts.needs && !sharePermissionAllows(row.permission, opts.needs)) {
+      const message = row.permission === "read" ? "read-only token" : "write access required";
+      return errorResponse(403, message);
     }
     c.set("share", row);
 

@@ -3,11 +3,12 @@
 //   /share/:token/files/:fileId    → folder-share file (loads /api/share/:token/files/:fileId)
 //
 // Same layout as the owner editor: `<EditorHeader>` in visitor mode
-// (no owner actions; "Shared · View only / Can edit"; Download when the
-// link allows it) above the editor surface. The header's back button
-// returns to the shared folder on folder-share file routes; on a
-// top-level file-share token there's no parent and it's hidden.
-// Read-only shares get the canvas in view mode.
+// (no owner actions; "Shared · View only / Can edit / Live collaboration";
+// Download when the link allows it) above the editor surface. The header's
+// back button returns to the shared folder on folder-share file routes; on
+// a top-level file-share token there's no parent and it's hidden.
+// Read-only shares get the canvas in view mode; only `collab` links open
+// the realtime socket.
 
 import { useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
@@ -18,6 +19,7 @@ import { shares } from "@/lib/api/client";
 import { keys } from "@/lib/api/query-keys";
 import { errorMessage } from "@/lib/errors";
 import { useTheme } from "@/lib/theme";
+import { collabPathForShare } from "./collab/paths";
 import { EditorErrorState, EditorLoadingState } from "./EditorChrome";
 import { EditorHeader } from "./EditorHeader";
 import type { RenderEditorHeader } from "./editorHeaderBridge";
@@ -110,10 +112,17 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
   }
   if (!loaded) return <EditorLoadingState label="Loading shared file…" />;
 
-  const writable = loaded.permission === "write";
+  const writable = loaded.permission !== "read";
   const downloadHref = fileId
     ? shares.folderFileDownloadUrl(token, fileId)
     : shares.downloadUrl(token);
+  // Guests have no session, so live collab runs through the share-token
+  // route — and only the `collab` mode opens a WebSocket. `write` links are
+  // editable without a live session; view-only links stay in view mode.
+  const collabPath =
+    loaded.permission === "collab" && loaded.meta.kind === "excalidraw"
+      ? collabPathForShare(fileId ? { kind: "folder", token, fileId } : { kind: "file", token })
+      : undefined;
 
   if (loaded.meta.kind === "static-site") {
     // Share-token visitors don't see the management surface for
@@ -206,6 +215,7 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
         <ExcalidrawEditor
           key={editorKey}
           {...common}
+          collabPath={collabPath}
           chrome={
             <ExcalidrawMenu variant="shared" theme={themeMode} onSelectTheme={setThemeMode} />
           }

@@ -12,6 +12,7 @@ import { cors } from "./middleware/cors";
 import type { AppEnv } from "./middleware/types";
 import adminRoutes from "./routes/admin";
 import authRoutes from "./routes/auth";
+import collabRoutes from "./routes/collab";
 import filesRoutes from "./routes/files";
 import foldersRoutes from "./routes/folders";
 import invitesRoutes from "./routes/invites";
@@ -23,6 +24,10 @@ import { fileSharesNested, folderSharesNested, sharesRoot } from "./routes/share
 import tagsRoutes from "./routes/tags";
 import trashRoutes from "./routes/trash";
 import { purgeExpired } from "./services/trash";
+
+// Durable Object class referenced by `[[durable_objects.bindings]]` in
+// wrangler.toml — wrangler requires it exported from the main module.
+export { CollabRoom } from "./collab";
 
 const app = new Hono<AppEnv>();
 
@@ -39,6 +44,10 @@ app.route("/api/invites", invitesRoutes);
 app.route("/api/admin", adminRoutes);
 app.route("/api/folders", foldersRoutes);
 app.route("/api/files", filesRoutes);
+// Realtime collaboration upgrade (`GET /api/files/:id/collab`). Mounted
+// on the same base as the files router; `/:id` there never matches the
+// `/collab` suffix, so order is not load-bearing.
+app.route("/api/files", collabRoutes);
 app.route("/api/tags", tagsRoutes);
 app.route("/api/items", itemsRoutes);
 app.route("/api/trash", trashRoutes);

@@ -21,6 +21,8 @@
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
+import { permissionShortLabel } from "@/features/sharing/shareStatus";
+import type { SharePermission } from "@/lib/api/client";
 import { cn } from "@/lib/utils";
 import type { ListSelectionApi } from "./useListSelection";
 
@@ -321,17 +323,17 @@ export function RowIconButton({
   );
 }
 
-export function PermBadge({ permission }: { permission: "read" | "write" }) {
+export function PermBadge({ permission }: { permission: SharePermission }) {
   return (
     <span
       className={cn(
         "rounded px-1.5 py-px text-[10.5px] font-medium",
-        permission === "write"
+        permission !== "read"
           ? "bg-accent text-accent-foreground"
           : "bg-muted text-muted-foreground",
       )}
     >
-      {permission === "write" ? "Edit" : "View"}
+      {permissionShortLabel(permission)}
     </span>
   );
 }

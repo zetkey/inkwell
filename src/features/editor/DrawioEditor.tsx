@@ -310,7 +310,7 @@ export default function DrawioEditor({
   renderHeader,
 }: DrawioEditorProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const readOnly = loaded.permission !== "write";
+  const readOnly = loaded.permission === "read";
   const initialXml = getDrawioXml(loaded);
 
   // Latest XML pushed by drawio's `autosave` / `save` reply messages.

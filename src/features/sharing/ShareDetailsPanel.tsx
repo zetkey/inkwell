@@ -24,7 +24,7 @@ import { cn } from "@/lib/utils";
 import { AllowDownloadField } from "./fields/AllowDownloadField";
 import { ExpiryChips, type ExpiryChoice } from "./fields/ExpiryChips";
 import { LabelField } from "./fields/LabelField";
-import { PermissionSegment } from "./fields/PermissionSegment";
+import { PERMISSION_HINTS, PermissionSegment } from "./fields/PermissionSegment";
 import { copyShareLink } from "./ShareDialog";
 import { extendShares, revokeShares, updateShareWithUndo } from "./shareActions";
 import { expiryLabel, presetToExpiresAt, shareStatus } from "./shareStatus";
@@ -142,15 +142,26 @@ function SingleLink({
         <PermissionSegment
           value={share.permission}
           onChange={(p) => {
-            if (p !== share.permission) {
-              save(
-                p === "write" ? { permission: p, allowDownload: true } : { permission: p },
-                p === "write" ? "Link can now edit" : "Link is now view-only",
-              );
-            }
+            if (p === share.permission) return;
+            const message =
+              p === "collab"
+                ? "Live collaboration enabled"
+                : p === "write"
+                  ? "Link can now edit"
+                  : "Link is now view-only";
+            save(
+              p === "read" ? { permission: p } : { permission: p, allowDownload: true },
+              message,
+            );
           }}
           lockedToRead={target.kind === "static-site"}
+          collabDisabled={
+            target.ref.type === "file" && target.kind !== undefined && target.kind !== "excalidraw"
+          }
         />
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          {PERMISSION_HINTS[share.permission]}
+        </p>
       </Section>
 
       <Section title="Expires">

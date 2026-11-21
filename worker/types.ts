@@ -13,6 +13,9 @@ export interface Env {
   ASSETS: Fetcher;
   R2: R2Bucket;
   DB: D1Database;
+  // Durable Object namespace backing realtime collaboration rooms
+  // (one room per excalidraw file id). See worker/collab.ts.
+  COLLAB: DurableObjectNamespace;
   // Secrets — set via `wrangler secret put`.
   SUPER_ADMIN_EMAIL: string;
   SUPER_ADMIN_PASSWORD: string;
@@ -349,8 +352,27 @@ export interface StaticSiteFileBlob {
 export type FileBlob = ExcalidrawFileBlob | DrawioFileBlob | NotesFileBlob | StaticSiteFileBlob;
 
 // ─── Shares (polymorphic) ────────────────────────────────────────────
-export type SharePermission = "read" | "write";
+// read   = view only
+// write  = save file content, no realtime room
+// collab = save file content + join the realtime room
+export type SharePermission = "read" | "write" | "collab";
 export type ShareTargetType = "file" | "folder";
+
+// Saving file content: write and collab links (not read).
+export function canEditPermission(p: SharePermission): boolean {
+  return p !== "read";
+}
+
+// What a link is allowed to do. "edit" = save file content, "write" =
+// structural operations (create/delete files, assets), "collab" = open
+// a realtime WebSocket room.
+export type ShareNeed = "edit" | "write" | "collab";
+
+export function sharePermissionAllows(permission: SharePermission, need: ShareNeed): boolean {
+  if (need === "collab") return permission === "collab";
+  if (!canEditPermission(permission)) return false;
+  return need === "edit" || permission === "write";
+}
 
 export type ShareRow = InferSelectModel<typeof t.shares>;
 

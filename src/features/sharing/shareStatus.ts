@@ -7,8 +7,10 @@
 //   shareStatus(share, now): ShareStatus         – expiring = expires within 24 h
 //   type StatusFilter = "all" | "active" | "expiring" | "expired"
 //       ("active" = not expired, i.e. includes expiring links)
-//   interface ShareFilters { type: "all"|"file"|"folder"; access: "all"|"read"|"write";
+//   interface ShareFilters { type: "all"|"file"|"folder"; access: "all"|SharePermission;
 //                            status: StatusFilter; q: string }
+//   permissionLabel(p): "View only" · "Can edit" · "Live collaboration"
+//   permissionShortLabel(p): "View" · "Edit" · "Live"
 //   filterShares(shares, filters, now): Share[]
 //   groupByTarget(shares): { key, targetType, targetId, name, rows }[]   – first-seen order
 //   expiryLabel(expiresAt, now): string          – "Never" · "in 2 hours" · "in 6 days" · "Expired Sep 12"
@@ -25,6 +27,30 @@ const DAY = 24 * HOUR;
 export const EXPIRING_SOON_MS = DAY;
 
 export type ShareStatus = "active" | "expiring" | "expired";
+
+/** Long label used by pickers and link badges. */
+export function permissionLabel(p: SharePermission): string {
+  switch (p) {
+    case "collab":
+      return "Live collaboration";
+    case "write":
+      return "Can edit";
+    case "read":
+      return "View only";
+  }
+}
+
+/** Compact label for dense tables ("View" · "Edit" · "Live"). */
+export function permissionShortLabel(p: SharePermission): string {
+  switch (p) {
+    case "collab":
+      return "Live";
+    case "write":
+      return "Edit";
+    case "read":
+      return "View";
+  }
+}
 
 export function shareStatus(s: Pick<Share, "expiresAt">, now: number): ShareStatus {
   if (s.expiresAt === null) return "active";

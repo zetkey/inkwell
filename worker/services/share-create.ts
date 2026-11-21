@@ -24,9 +24,10 @@ export async function createShareRow(
   targetId: string,
   body: CreateShareBody,
 ): Promise<ShareRow> {
-  const permission: SharePermission = body.permission === "write" ? "write" : "read";
-  // Write shares always allow download; read shares default to allowing it.
-  const allowDownload = permission === "write" ? true : body.allowDownload !== false;
+  const permission: SharePermission =
+    body.permission === "write" || body.permission === "collab" ? body.permission : "read";
+  // Write and collab shares always allow download; read shares default to allowing it.
+  const allowDownload = permission !== "read" ? true : body.allowDownload !== false;
   const expiresAt =
     body.expiresAt !== undefined && body.expiresAt !== null && Number.isFinite(body.expiresAt)
       ? Number(body.expiresAt)

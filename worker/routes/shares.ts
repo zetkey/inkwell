@@ -67,13 +67,24 @@ sharesRoot.patch("/:token", async (c) => {
   // leaves it alone, a value replaces it, `null` is the explicit clear
   // for nullable fields.
   const nextPermission: SharePermission =
-    body.permission === "read" || body.permission === "write" ? body.permission : row.permission;
+    body.permission === "read" || body.permission === "write" || body.permission === "collab"
+      ? body.permission
+      : row.permission;
 
-  // Write shares always allow download (mirrors create). For read
-  // shares, honour an explicit boolean; otherwise keep the current
+  // Collab needs an excalidraw file (a folder share may cover excalidraw
+  // files inside its subtree).
+  if (nextPermission === "collab" && row.target_type === "file") {
+    const file = await filesRepo.findByIdAnyOwner(c.env, row.target_id);
+    if (file?.kind !== "excalidraw") {
+      return errorResponse(400, "collab requires an excalidraw file");
+    }
+  }
+
+  // Write and collab shares always allow download (mirrors create). For
+  // read shares, honour an explicit boolean; otherwise keep the current
   // value.
   let nextAllowDownload = row.allow_download;
-  if (nextPermission === "write") {
+  if (nextPermission !== "read") {
     nextAllowDownload = true;
   } else if (typeof body.allowDownload === "boolean") {
     nextAllowDownload = body.allowDownload;
@@ -163,6 +174,10 @@ fileSharesNested.post("/", async (c) => {
   // Static-site shares are view-only — see PATCH handler above.
   if (row.kind === "static-site" && body.permission === "write") {
     return errorResponse(400, "static-site shares cannot grant write access");
+  }
+  // Collab needs an excalidraw file to realtime-edit.
+  if (body.permission === "collab" && row.kind !== "excalidraw") {
+    return errorResponse(400, "collab requires an excalidraw file");
   }
   const created = await createShareRow(c.env, owner, "file", fileId, body);
   return jsonResponse(rowToSharePublic(created));

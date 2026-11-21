@@ -70,6 +70,7 @@ import {
   DEFAULT_SHARE_FILTERS,
   expiryLabel,
   filterShares,
+  permissionLabel,
   type ShareFilters,
   shareStatus,
 } from "./shareStatus";
@@ -139,12 +140,7 @@ export function SharesPage() {
     const map = new Map<string, { key: string; label: string; rows: Share[] }>();
     for (const s of rows) {
       const key = groupBy === "target" ? `${s.targetType}:${s.targetId}` : s.permission;
-      const label =
-        groupBy === "target"
-          ? resolve(s).name
-          : s.permission === "write"
-            ? "Can edit"
-            : "View only";
+      const label = groupBy === "target" ? resolve(s).name : permissionLabel(s.permission);
       const g = map.get(key) ?? { key, label, rows: [] };
       g.rows.push(s);
       map.set(key, g);
@@ -329,8 +325,9 @@ export function SharesPage() {
               onValueChange={(value) => setF({ access: value as ShareFilters["access"] })}
             >
               <DropdownMenuRadioItem value="all">All</DropdownMenuRadioItem>
-              <DropdownMenuRadioItem value="read">View</DropdownMenuRadioItem>
-              <DropdownMenuRadioItem value="write">Edit</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="read">View only</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="write">Can edit</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="collab">Live</DropdownMenuRadioItem>
             </DropdownMenuRadioGroup>
             <DropdownMenuLabel>Status</DropdownMenuLabel>
             <DropdownMenuRadioGroup
@@ -525,7 +522,7 @@ function ShareRow({
         {expiryLabel(s.expiresAt, now)}
       </Td>
       <Td>
-        {s.allowDownload || s.permission === "write" ? (
+        {s.allowDownload || s.permission !== "read" ? (
           <HugeiconsIcon
             icon={Tick02Icon}
             strokeWidth={2}

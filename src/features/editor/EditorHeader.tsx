@@ -8,8 +8,8 @@
 // Trash), shortcuts and the account menu.
 //
 // Visitor mode (`SharedEditorPage`, `visitor` prop): no owner actions;
-// shows "Shared · View only / Can edit" and a download button when the
-// link allows it.
+// shows "Shared · View only / Can edit / Live collaboration" and a
+// download button when the link allows it.
 //
 // Save state comes from the editor's own lifecycle through the
 // `EditorHeaderBridge` (see `./editorHeaderBridge.ts`); every
@@ -25,6 +25,7 @@
 //   • F2             inline rename (owner, not while typing in a field)
 
 import {
+  Activity01Icon,
   Alert02Icon,
   ArrowLeft01Icon,
   ArrowRight01Icon,
@@ -70,7 +71,8 @@ import {
 import { useMe } from "@/data/auth";
 import { useFolders } from "@/data/folders";
 import { folderPath } from "@/features/folders/FolderTree";
-import type { FileKind } from "@/lib/api/client";
+import { permissionLabel } from "@/features/sharing/shareStatus";
+import type { FileKind, SharePermission } from "@/lib/api/client";
 import { expiresPhrase } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { EditorHeaderBridge } from "./editorHeaderBridge";
@@ -89,7 +91,7 @@ export interface EditorHeaderVisitor {
   sharedBy?: string | null;
   /** Link expiry (unix-ms) or `null`. */
   expiresAt?: number | null;
-  permission: "read" | "write";
+  permission: SharePermission;
   allowDownload: boolean;
   onDownload?: () => void;
 }
@@ -191,7 +193,7 @@ export function EditorHeader(props: EditorHeaderProps) {
     if (canRenameRef.current) setRenaming(true);
   }, [renameNonce]);
 
-  const readOnly = isVisitor && visitor.permission !== "write";
+  const readOnly = isVisitor && visitor.permission === "read";
 
   return (
     <div className="relative z-20 shrink-0">
@@ -567,17 +569,18 @@ function SaveIndicator({ bridge, version }: { bridge: EditorHeaderBridge; versio
 // ─── Visitor bits ────────────────────────────────────────────────────
 
 function VisitorChip({ visitor }: { visitor: EditorHeaderVisitor }) {
-  const canEdit = visitor.permission === "write";
+  const icon =
+    visitor.permission === "collab"
+      ? Activity01Icon
+      : visitor.permission === "write"
+        ? PencilEdit02Icon
+        : EyeIcon;
   return (
     <span
       data-testid="editor-visitor-chip"
       className="hidden shrink-0 items-center gap-1.5 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground sm:inline-flex"
     >
-      <HugeiconsIcon
-        icon={canEdit ? PencilEdit02Icon : EyeIcon}
-        strokeWidth={1.8}
-        className="size-3.5"
-      />
+      <HugeiconsIcon icon={icon} strokeWidth={1.8} className="size-3.5" />
       {visitor.sharedBy ? (
         <>
           Shared by <b className="font-medium text-foreground">{visitor.sharedBy}</b> ·
@@ -585,7 +588,7 @@ function VisitorChip({ visitor }: { visitor: EditorHeaderVisitor }) {
       ) : (
         "Shared ·"
       )}{" "}
-      {canEdit ? "Can edit" : "View only"}
+      {permissionLabel(visitor.permission)}
       {visitor.expiresAt ? ` · link ${expiresPhrase(visitor.expiresAt)}` : null}
     </span>
   );

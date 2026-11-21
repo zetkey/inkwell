@@ -6,6 +6,8 @@ import {
   extendExpiry,
   filterShares,
   groupByTarget,
+  permissionLabel,
+  permissionShortLabel,
   presetToExpiresAt,
   shareStatus,
   shortExpiry,
@@ -78,6 +80,27 @@ describe("filterShares", () => {
     const g = groupByTarget(list);
     expect(g.map((x) => x.key)).toEqual(["file:f1", "folder:d1"]);
     expect(g[0].rows).toHaveLength(3);
+  });
+  it("filters by each access mode, including collab", () => {
+    const f = { ...DEFAULT_SHARE_FILTERS, status: "all" as const };
+    const mixed = [
+      share({ token: "r" }),
+      share({ token: "w", permission: "write" }),
+      share({ token: "c", permission: "collab" }),
+    ];
+    expect(tokens(filterShares(mixed, { ...f, access: "read" }, NOW))).toEqual(["r"]);
+    expect(tokens(filterShares(mixed, { ...f, access: "collab" }, NOW))).toEqual(["c"]);
+  });
+});
+
+describe("permission labels", () => {
+  it("distinguishes all three modes", () => {
+    expect(permissionLabel("read")).toBe("View only");
+    expect(permissionLabel("write")).toBe("Can edit");
+    expect(permissionLabel("collab")).toBe("Live collaboration");
+    expect(permissionShortLabel("read")).toBe("View");
+    expect(permissionShortLabel("write")).toBe("Edit");
+    expect(permissionShortLabel("collab")).toBe("Live");
   });
 });
 

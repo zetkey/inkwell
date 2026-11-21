@@ -227,7 +227,7 @@ export interface LoadedFile {
   };
   blob: FileBlob;
   /** Permission when loaded via a share token. Owner-loaded files are 'write'. */
-  permission: "read" | "write";
+  permission: SharePermission;
   /** True if the share token allows downloading the file. */
   allowDownload: boolean;
   /** Share-token loads: the owner's display name (never email). `null`
@@ -243,7 +243,21 @@ export interface SharedBy {
   lastName: string;
 }
 
-export type SharePermission = "read" | "write";
+/**
+ * `read` = view only · `write` = edit + save, no live session ·
+ * `collab` = edit + save + realtime collaboration (Excalidraw only).
+ */
+export type SharePermission = "read" | "write" | "collab";
+
+/**
+ * `x-share-permission` → `SharePermission`. Preserves all three values
+ * (the editor needs `collab` to pick the token collab endpoint); anything
+ * unknown falls back to the safest mode.
+ */
+export function parseSharePermission(raw: string | null | undefined): SharePermission {
+  return raw === "write" || raw === "collab" ? raw : "read";
+}
+
 export type ShareTargetType = "file" | "folder";
 
 export interface Share {
@@ -666,7 +680,7 @@ export const shares = {
   async load(token: string): Promise<LoadedFile> {
     const resp = await fetch(`/api/share/${token}`, { credentials: "include" });
     if (!resp.ok) throw new ApiError(resp.status, `HTTP ${resp.status}`);
-    const perm = (resp.headers.get("x-share-permission") as "read" | "write") || "read";
+    const perm = parseSharePermission(resp.headers.get("x-share-permission"));
     const allowDownload = resp.headers.get("x-share-allow-download") === "1";
     return readFileResponse(resp, perm, allowDownload);
   },
@@ -706,7 +720,7 @@ export const shares = {
       const payload = (await resp.json()) as FolderSharePayload;
       return { type: "folder", payload };
     }
-    const perm = (resp.headers.get("x-share-permission") as "read" | "write") || "read";
+    const perm = parseSharePermission(resp.headers.get("x-share-permission"));
     const allowDownload = resp.headers.get("x-share-allow-download") === "1";
     const file = await readFileResponse(resp, perm, allowDownload);
     return { type: "file", file };
@@ -720,7 +734,7 @@ export const shares = {
       credentials: "include",
     });
     if (!resp.ok) throw new ApiError(resp.status, `HTTP ${resp.status}`);
-    const perm = (resp.headers.get("x-share-permission") as "read" | "write") || "read";
+    const perm = parseSharePermission(resp.headers.get("x-share-permission"));
     const allowDownload = resp.headers.get("x-share-allow-download") === "1";
     return readFileResponse(resp, perm, allowDownload);
   },
@@ -769,7 +783,7 @@ export const shares = {
 // ─── Internal helpers ─────────────────────────────────────────────────
 async function readFileResponse(
   resp: Response,
-  permission: "read" | "write",
+  permission: SharePermission,
   allowDownload: boolean,
 ): Promise<LoadedFile> {
   const id = resp.headers.get("x-file-id") || "";

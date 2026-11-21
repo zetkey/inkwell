@@ -45,7 +45,7 @@ export default function MarkdownEditor({
   reload,
   renderHeader,
 }: MarkdownEditorProps) {
-  const readOnly = loaded.permission !== "write";
+  const readOnly = loaded.permission === "read";
   const blob = loaded.blob as NotesFileBlob;
   const canonical = initialSource(blob);
   const [source, setSource] = useState<string | null>(canonical);
