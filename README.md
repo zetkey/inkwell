@@ -263,6 +263,13 @@ comfortably, and R2 has no egress fees.
 
 ## Limitations
 
+- **File blobs are capped at 4 MiB.** Every save and download parses (and,
+  for export, re-stringifies) the whole blob synchronously; on the Workers
+  Free plan (10 ms CPU) ~4 MiB is what stays inside that budget. Uploads
+  above the cap answer `413 file exceeds 4 MiB`.
+- **Static-site assets are capped separately:** 25 MiB per asset, 25 MiB
+  per site, and a single-ZIP download of up to 3 MiB (store-only, so the
+  CPU cost stays bounded).
 - **No real-time collaboration.** Single-writer per file; last-write-wins
   across tabs (with a `version` check that catches the common case).
 - **No password recovery flow.** Admins can re-issue an invite; there is

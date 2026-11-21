@@ -15,7 +15,7 @@ vi.mock("../db/repos/files", () => ({
 vi.mock("../db/repos/tags", () => ({ listForEntity: async () => [] }));
 vi.mock("../db/repos/shares", () => ({ countActiveByTarget: async () => new Map() }));
 
-import { mirrorRenameIntoExcalidrawBlob, putFileBlob } from "./file-blob";
+import { MAX_FILE_BYTES, mirrorRenameIntoExcalidrawBlob, putFileBlob } from "./file-blob";
 
 function row(overrides: Partial<FileRow> = {}): FileRow {
   return {
@@ -150,6 +150,11 @@ describe("putFileBlob rollback", () => {
 });
 
 describe("putFileBlob body cap", () => {
+  it("locks the shared blob cap at 4 MiB", () => {
+    expect(MAX_FILE_BYTES).toBe(4 * 1024 * 1024);
+    expect(MAX_FILE_BYTES).toBeLessThanOrEqual(4 * 1024 * 1024);
+  });
+
   it("rejects an oversized Content-Length before claiming or buffering", async () => {
     const puts: string[] = [];
     const env = fakeEnv(puts);
@@ -159,6 +164,24 @@ describe("putFileBlob body cap", () => {
     });
 
     const res = await putFileBlob(env, row(), req);
+
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ error: "file exceeds 4 MiB" });
+    expect(puts).toEqual([]);
+    expect(mocks.claimVersion).not.toHaveBeenCalled();
+  });
+
+  it("rejects a buffered body just over the cap without touching R2", async () => {
+    const puts: string[] = [];
+    const env = fakeEnv(puts);
+    // No Content-Length on purpose: the byteLength guard must catch it.
+    const oversized = new Uint8Array(MAX_FILE_BYTES + 1);
+
+    const res = await putFileBlob(
+      env,
+      row(),
+      new Request("https://inkwell.test/api/files/file-1", { method: "PUT", body: oversized }),
+    );
 
     expect(res.status).toBe(413);
     expect(puts).toEqual([]);

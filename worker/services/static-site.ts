@@ -24,7 +24,8 @@ import { now } from "../lib/util";
 import type { Env, FileRow, StaticSiteAsset, StaticSiteFileBlob } from "../types";
 
 // ─── Caps ───────────────────────────────────────────────────────────
-/** Single-asset upload cap. Matches existing `MAX_FILE_BYTES`. */
+/** Single-asset upload cap. Independent of the 4 MiB blob cap: assets are
+ *  served/streamed, never parsed as one JSON document by the Worker. */
 export const MAX_SITE_ASSET_BYTES = 25 * 1024 * 1024;
 /** Whole-site total cap (sum across all assets, uncompressed). */
 export const MAX_SITE_TOTAL_BYTES = 25 * 1024 * 1024;

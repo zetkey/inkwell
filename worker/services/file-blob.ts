@@ -26,7 +26,12 @@ import {
 } from "../types";
 import { emptyManifest, isStaticSiteBlob, validateManifest, writeSeedSite } from "./static-site";
 
-export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+/** Blob cap. Kept at 4 MiB because every save/download path parses the
+ *  JSON synchronously (`JSON.parse` ≈1 ms/MiB, plus `stringify` on
+ *  download), and the Free plan gives 10 ms CPU per request: 4 MiB leaves
+ *  room for validation and the R2 round-trip. Static-site *assets* have
+ *  their own cap (`static-site.ts#MAX_SITE_ASSET_BYTES`). */
+export const MAX_FILE_BYTES = 4 * 1024 * 1024;
 export const MAX_THUMB_BYTES = 1 * 1024 * 1024;
 
 // ─── Blob construction ──────────────────────────────────────────────
@@ -209,11 +214,11 @@ export async function putFileBlob(env: Env, row: FileRow, req: Request): Promise
   // Refuse an outsized body from its header before buffering it; the
   // byteLength check below still covers chunked/lying clients.
   const declared = Number(req.headers.get("content-length") || "0");
-  if (declared > MAX_FILE_BYTES) return errorResponse(413, "file too large");
+  if (declared > MAX_FILE_BYTES) return errorResponse(413, "file exceeds 4 MiB");
 
   const buf = await req.arrayBuffer();
   if (buf.byteLength === 0) return errorResponse(400, "empty body");
-  if (buf.byteLength > MAX_FILE_BYTES) return errorResponse(413, "file too large");
+  if (buf.byteLength > MAX_FILE_BYTES) return errorResponse(413, "file exceeds 4 MiB");
 
   let parsed: FileBlob;
   try {

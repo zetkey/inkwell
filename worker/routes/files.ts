@@ -211,9 +211,12 @@ r.post("/import", async (c) => {
     return errorResponse(404, "folder not found");
   }
 
+  if (Number(c.req.header("content-length") || "0") > MAX_FILE_BYTES) {
+    return errorResponse(413, "file exceeds 4 MiB");
+  }
   const buf = await c.req.arrayBuffer();
   if (buf.byteLength === 0) return errorResponse(400, "empty body");
-  if (buf.byteLength > MAX_FILE_BYTES) return errorResponse(413, "file too large");
+  if (buf.byteLength > MAX_FILE_BYTES) return errorResponse(413, "file exceeds 4 MiB");
 
   let parsed: unknown;
   try {
