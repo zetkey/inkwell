@@ -1,4 +1,5 @@
 - Admin user credentials for local development
+
   ```
   UN:admin@inkwell.com
   PW:admin
@@ -16,4 +17,3 @@ Inkwell must run entirely on the Workers **Free** plan. Hold this constraint on 
 - Collab rooms validate the share token / session once, at WebSocket upgrade; revocation applies on reconnect (per-message revalidation would burn the 10 ms CPU budget). Rooms cap at 24 sockets and 40 messages/s per socket.
 - Verify every change with `pnpm typecheck`, `pnpm test`, and `wrangler deploy --dry-run --outdir /tmp/inkwell-dryrun` — it must pass without introducing a binding.
 - If a feature approaches a quota (collab room count, autosave cadence, large uploads), say so explicitly and ask for a product decision; never raise usage silently.
-

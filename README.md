@@ -45,10 +45,10 @@ Features at a glance:
 - **Keyboard first**: every action is available from a button, a context
   menu and a shortcut. The **command palette** (⌘K / Ctrl+K) searches files,
   folders, tags and commands. The **shortcut sheet** (`?`) lists every
-  binding, and shortcuts can be rebound in *Settings → Shortcuts*.
+  binding, and shortcuts can be rebound in _Settings → Shortcuts_.
   Moves, renames, tag edits, stars and trashing can be undone (⌘Z or the
-  toast's *Undo* button).
-- **Trash** with restore, *Delete forever*, *Empty trash* and an automatic
+  toast's _Undo_ button).
+- **Trash** with restore, _Delete forever_, _Empty trash_ and an automatic
   purge after 30 days. **Starred** and **Recent** views, and tag pages.
 - **Duplicate** files and whole folders (including R2 blobs, thumbnails and
   static-site assets)
@@ -62,7 +62,7 @@ Features at a glance:
   and **Static sites** for publishing uploaded HTML/CSS/JS bundles
 - **Share links** for individual files or whole folder subtrees, read or
   read-write, with optional expiry and downloads, managed from one filterable
-  *Shared links* page
+  _Shared links_ page
 - **Email + password auth**, invitation-only signup (invites can carry a
   note), super-admin bootstrap
 - Client-rendered SVG thumbnails, debounced autosave, optimistic concurrency
@@ -84,7 +84,7 @@ Key choices:
   hits R2 — D1 returns metadata in milliseconds. R2 is only touched on open
   and save.
 - **Static-site files** are multi-asset bundles: the canonical JSON blob
-  is a *manifest* listing every uploaded file, and each asset lives at
+  is a _manifest_ listing every uploaded file, and each asset lives at
   `static-sites/{id}/{relpath}` in R2. The Worker serves them through a
   signed `/sites/...` (owner) and `/shared/...` (share-token) routes so uploaded JS
   cannot read session cookies or call `/api/*` as the owner. See
@@ -169,7 +169,7 @@ install → `pnpm check:ci` → `pnpm test` → `pnpm drawio:assets` →
 
 The migration step is idempotent: `wrangler` records applied files in
 `d1_migrations`, so a push with no new migration is a no-op. It runs
-*before* the Worker so new code never meets an old schema; a failed
+_before_ the Worker so new code never meets an old schema; a failed
 migration aborts the deploy and leaves the previous Worker live.
 
 Add both credentials as repository secrets on `zetkey/inkwell`:
@@ -179,7 +179,7 @@ gh secret set CLOUDFLARE_API_TOKEN     # Workers Scripts:Edit, Workers R2 Storag
 gh secret set CLOUDFLARE_ACCOUNT_ID    # `pnpm exec wrangler whoami` prints the account id
 ```
 
-Create the token in the Cloudflare dashboard → *My Profile* → *API Tokens* →
+Create the token in the Cloudflare dashboard → _My Profile_ → _API Tokens_ →
 the **Edit Cloudflare Workers** template.
 
 Production D1 migrations are applied by that step, so a normal push needs no
@@ -262,6 +262,7 @@ monthly cost is **$0** — Workers, R2, and D1 free tiers cover it
 comfortably, and R2 has no egress fees.
 
 ## Limitations
+
 - **Collaboration auth is connect-time only.** A share token or session is
   validated when the WebSocket upgrades; revoking it takes effect on the
   next reconnect (per-message revalidation is too expensive on the Free
