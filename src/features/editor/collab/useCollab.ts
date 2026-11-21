@@ -168,6 +168,40 @@ export function useCollab({
     api.updateScene({ collaborators, captureUpdate: CaptureUpdateAction.NEVER });
   }, [apiRef]);
 
+  // Scene frames left over when the whole scene cannot fit one frame; each
+  // drains on its own tick. `snapshotSceneRef` is the scene the queue is
+  // delivering, stamped only once the last batch is on the wire.
+  const snapshotQueueRef = useRef<Array<{ elements: ExcalidrawElement[]; order?: string[] }>>([]);
+  const snapshotTimerRef = useRef<number | null>(null);
+  const snapshotSceneRef = useRef<{ elements: ExcalidrawElement[]; order: string[] } | null>(null);
+
+  /** Sends the next queued batch. A refused frame stays at the front of the
+   *  queue and the baseline is left alone, so the next open/flush retries it. */
+  const drainSnapshotQueue = useCallback((): boolean => {
+    snapshotTimerRef.current = null;
+    const batch = snapshotQueueRef.current[0];
+    if (!batch) return true;
+    const delivered = send({
+      t: "elements",
+      elements: batch.elements,
+      ...(batch.order ? { order: batch.order } : {}),
+    });
+    if (!delivered) return false;
+    snapshotQueueRef.current.shift();
+    if (snapshotQueueRef.current.length > 0) {
+      snapshotTimerRef.current = window.setTimeout(drainSnapshotQueue, 0);
+      return true;
+    }
+    // The room now has the whole scene: later deltas can be incremental.
+    const scene = snapshotSceneRef.current;
+    snapshotSceneRef.current = null;
+    if (scene) {
+      knownRef.current = stampElements(scene.elements);
+      lastOrderRef.current = scene.order;
+    }
+    return true;
+  }, [send]);
+
   const flushDelta = useCallback(() => {
     deltaTimerRef.current = null;
     const pending = pendingSceneRef.current;
@@ -175,6 +209,13 @@ export function useCollab({
     // Offline: keep the pending snapshot (and `knownRef`) untouched so the
     // next change after reconnect still has something to ship.
     if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+    // A full-scene snapshot is still in flight: a delta now would only repeat
+    // it (the baseline stays stale until the queue ends). Retry the queue
+    // and keep the pending scene for the next flush.
+    if (snapshotQueueRef.current.length > 0) {
+      drainSnapshotQueue();
+      return;
+    }
 
     const changed = changedElements(knownRef.current, pending.elements);
     const order = orderOf(pending.elements);
@@ -216,32 +257,7 @@ export function useCollab({
     knownRef.current = stampElements(pending.elements);
     if (sendOrder) lastOrderRef.current = order;
     for (const id of Object.keys(files)) sentFilesRef.current.add(id);
-  }, [send]);
-
-  // Scene frames left over when the whole scene cannot fit one frame; each
-  // drains on its own tick.
-  const snapshotQueueRef = useRef<Array<{ elements: ExcalidrawElement[]; order?: string[] }>>([]);
-  const snapshotTimerRef = useRef<number | null>(null);
-
-  /** Sends the next queued batch; false once the socket refuses one. */
-  const drainSnapshotQueue = useCallback((): boolean => {
-    snapshotTimerRef.current = null;
-    const batch = snapshotQueueRef.current.shift();
-    if (!batch) return true;
-    const delivered = send({
-      t: "elements",
-      elements: batch.elements,
-      ...(batch.order ? { order: batch.order } : {}),
-    });
-    if (!delivered) {
-      snapshotQueueRef.current = [];
-      return false;
-    }
-    if (snapshotQueueRef.current.length > 0) {
-      snapshotTimerRef.current = window.setTimeout(drainSnapshotQueue, 0);
-    }
-    return true;
-  }, [send]);
+  }, [drainSnapshotQueue, send]);
 
   // Full-scene answer to a freshly seen peer (see `shouldSendSnapshot`).
   // Stamping `knownRef` from the same scene keeps the regular delta path
@@ -255,25 +271,30 @@ export function useCollab({
     const fileIds = Object.keys(files);
     const plan = planSnapshot(elements, files);
 
+    // A newer full snapshot supersedes anything still queued from an older
+    // scene (the queue would otherwise replay stale geometry afterwards).
+    if (snapshotTimerRef.current !== null) {
+      window.clearTimeout(snapshotTimerRef.current);
+      snapshotTimerRef.current = null;
+    }
+    snapshotQueueRef.current = [];
+    snapshotSceneRef.current = null;
+
     if (plan.skip) {
       // Geometry alone cannot fit one frame. Going silent would leave a
       // peer joining a huge board with an empty canvas, so deliver it in
       // budget-sized batches instead (first one now, the rest per tick).
-      if (snapshotTimerRef.current !== null) {
-        window.clearTimeout(snapshotTimerRef.current);
-        snapshotTimerRef.current = null;
-      }
       const batches = batchElements([...elements]);
       if (batches.length === 0) return;
       snapshotQueueRef.current = batches.map((batch, index) =>
         index === 0 ? { elements: batch, order } : { elements: batch },
       );
-      // The baseline only advances once the first frame is on the wire; the
-      // rest drain in the background and later deltas stay incremental.
-      if (!drainSnapshotQueue()) return;
-      knownRef.current = stampElements(elements);
-      lastOrderRef.current = order;
+      // The baseline advances only when the last batch is on the wire (see
+      // `drainSnapshotQueue`); a refused batch is retried, not dropped.
+      snapshotSceneRef.current = { elements: [...elements], order };
+      // The snapshot covers whatever was pending when it started.
       pendingSceneRef.current = null;
+      drainSnapshotQueue();
       return;
     }
 
@@ -431,6 +452,13 @@ export function useCollab({
     if (!enabled || !fileId) return;
     const api = apiRef.current;
     if (!api) return;
+    // Anything queued for a batch snapshot belongs to the previous scene.
+    if (snapshotTimerRef.current !== null) {
+      window.clearTimeout(snapshotTimerRef.current);
+      snapshotTimerRef.current = null;
+    }
+    snapshotQueueRef.current = [];
+    snapshotSceneRef.current = null;
     const elements = api.getSceneElementsIncludingDeleted();
     knownRef.current = stampElements(elements);
     lastOrderRef.current = orderOf(elements);
@@ -445,6 +473,9 @@ export function useCollab({
     // exactly like this); a socket that opened once always retries.
     let failures = 0;
     let everOpened = false;
+    // Survives reconnects inside this effect, so the next open can tell
+    // "first connect" (HTTP baseline is correct) from "we were away".
+    let hadOpened = false;
     let retryTimer: number | null = null;
     let socket: WebSocket | null = null;
 
@@ -472,8 +503,30 @@ export function useCollab({
         attempt = 0;
         failures = 0;
         everOpened = true;
+        const reconnected = hadOpened;
+        hadOpened = true;
         setConnected(true);
         send({ t: "join", name, color });
+
+        // A batch snapshot that ran out of socket retries from here.
+        if (snapshotQueueRef.current.length > 0) drainSnapshotQueue();
+
+        if (reconnected) {
+          // The room kept its copy while we were away, so our delta baseline
+          // is stale: drop it and ship the local scene instead. The server
+          // reconciles versions, and the peers see our new peerId and answer
+          // with their own snapshots (see `shouldSendSnapshot`).
+          knownRef.current = new Map();
+          lastOrderRef.current = [];
+          const api = apiRef.current;
+          if (api) {
+            pendingSceneRef.current = {
+              elements: api.getSceneElementsIncludingDeleted(),
+              files: api.getFiles(),
+            };
+          }
+        }
+
         // Edits made while offline kept their pending snapshot; ship it now.
         if (pendingSceneRef.current && deltaTimerRef.current === null) {
           deltaTimerRef.current = window.setTimeout(flushDelta, DELTA_THROTTLE_MS);
@@ -505,6 +558,7 @@ export function useCollab({
       disposed = true;
       if (retryTimer !== null) window.clearTimeout(retryTimer);
       snapshotQueueRef.current = [];
+      snapshotSceneRef.current = null;
       socket?.close();
       socket = null;
       socketRef.current = null;
@@ -518,7 +572,18 @@ export function useCollab({
         captureUpdate: CaptureUpdateAction.NEVER,
       });
     };
-  }, [apiRef, collabPath, color, enabled, fileId, flushDelta, handleServerMessage, name, send]);
+  }, [
+    apiRef,
+    collabPath,
+    color,
+    drainSnapshotQueue,
+    enabled,
+    fileId,
+    flushDelta,
+    handleServerMessage,
+    name,
+    send,
+  ]);
 
   // Away/active presence.
   useEffect(() => {
