@@ -1,6 +1,6 @@
 import type { AppState, BinaryFiles } from "@excalidraw/excalidraw/types";
 import { describe, expect, it } from "vitest";
-import { fingerprintScene } from "./excalidrawScene";
+import { fingerprintScene, isDefaultCanvasBackground } from "./excalidrawScene";
 
 const rect = (id: string, version: number) =>
   ({
@@ -47,5 +47,27 @@ describe("fingerprintScene", () => {
 
   it("changes when an element version changes", () => {
     expect(fp({}, [rect("a", 3)])).not.toBe(fp({}, [rect("a", 4)]));
+  });
+});
+
+describe("isDefaultCanvasBackground", () => {
+  it("treats Excalidraw's stock grounds as default", () => {
+    expect(isDefaultCanvasBackground("#ffffff")).toBe(true);
+    expect(isDefaultCanvasBackground("#FFFFFF")).toBe(true);
+    expect(isDefaultCanvasBackground("#fff")).toBe(true);
+    expect(isDefaultCanvasBackground("#121212")).toBe(true);
+    expect(isDefaultCanvasBackground(" #121212 ")).toBe(true);
+  });
+
+  it("treats a user-picked colour as not default", () => {
+    expect(isDefaultCanvasBackground("#fef3c7")).toBe(false);
+    expect(isDefaultCanvasBackground("#2d2d2d")).toBe(false);
+    expect(isDefaultCanvasBackground("transparent")).toBe(false);
+  });
+
+  it("treats a missing background as the light default", () => {
+    expect(isDefaultCanvasBackground(null)).toBe(true);
+    expect(isDefaultCanvasBackground(undefined)).toBe(true);
+    expect(isDefaultCanvasBackground("")).toBe(true);
   });
 });

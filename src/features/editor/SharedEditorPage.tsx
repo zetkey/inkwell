@@ -274,7 +274,12 @@ export function SharedEditorPage({ preloaded }: SharedEditorProps = {}) {
           collabEnabled={shouldOpenCollab(loaded.permission)}
           collabPath={collabPath}
           chrome={
-            <ExcalidrawMenu variant="shared" theme={themeMode} onSelectTheme={setThemeMode} />
+            <ExcalidrawMenu
+              variant="shared"
+              theme={themeMode}
+              onSelectTheme={setThemeMode}
+              writable={loaded.permission !== "read"}
+            />
           }
         />
       </div>

@@ -15,14 +15,18 @@
    white / #121212. The static canvas is blended against the container's
    background: `multiply` turns white into paper in light mode, and
    `lighten` lifts Excalidraw's inverted near-black to warm charcoal in
-   dark mode. Strokes and fills stay intact; exports are unaffected. */
+   dark mode. Strokes and fills stay intact; exports are unaffected.
+
+   Only the stock grounds are tinted: `data-canvas-default` is set from
+   `appState.viewBackgroundColor` (see `isDefaultCanvasBackground`), so a
+   colour the user picked in "Canvas background" renders at face value. */
 .excalidraw.excalidraw-container {
   background-color: var(--background);
 }
-.excalidraw canvas.excalidraw__canvas.static {
+[data-canvas-default="true"] .excalidraw canvas.excalidraw__canvas.static {
   mix-blend-mode: multiply;
 }
-.excalidraw.theme--dark canvas.excalidraw__canvas.static {
+[data-canvas-default="true"] .excalidraw.theme--dark canvas.excalidraw__canvas.static {
   mix-blend-mode: lighten;
 }
 

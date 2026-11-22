@@ -97,3 +97,21 @@ export function pickPersistableAppState(
   } = appState as unknown as Record<string, unknown>;
   return { ...rest, name: (rest.name as string | undefined) || fallbackName };
 }
+
+// ─── Canvas ground ──────────────────────────────────────────────────
+// Excalidraw's stock canvas grounds: white in light mode, near-black in
+// dark. The app tints exactly those to Inkwell's paper/charcoal via
+// `mix-blend-mode` in `excalidrawChrome.css`; anything the user picked in
+// "Canvas background" must render at face value instead.
+const DEFAULT_CANVAS_BACKGROUNDS: Record<string, true> = {
+  "#ffffff": true,
+  "#fff": true,
+  "#121212": true,
+};
+
+/** True when `color` is one of Excalidraw's stock canvas grounds (or
+ *  missing, which Excalidraw treats as the light default). */
+export function isDefaultCanvasBackground(color: string | null | undefined): boolean {
+  if (!color) return true;
+  return Object.hasOwn(DEFAULT_CANVAS_BACKGROUNDS, color.trim().toLowerCase());
+}

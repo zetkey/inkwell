@@ -34,7 +34,11 @@ import "./excalidrawChrome.css";
 import { useCollab } from "./collab/useCollab";
 import { usePresentation } from "./ExcalidrawPresent";
 import type { EditorExporter, EditorHeaderBridge, RenderEditorHeader } from "./editorHeaderBridge";
-import { fingerprintScene, pickPersistableAppState } from "./excalidrawScene";
+import {
+  fingerprintScene,
+  isDefaultCanvasBackground,
+  pickPersistableAppState,
+} from "./excalidrawScene";
 import { renderExcalidrawThumbSvg } from "./excalidrawThumb";
 import { LeaveConfirmDialog } from "./lifecycle/LeaveConfirmDialog";
 import type { EditorSaveStatus } from "./lifecycle/types";
@@ -124,6 +128,13 @@ export default function ExcalidrawEditor({
     () => normalizedSnapshot(loaded.blob as ExcalidrawFileBlob),
     [loaded.blob],
   );
+  // Canvas ground for the chrome blend. Excalidraw's stock white/#121212
+  // is tinted to Inkwell's paper/charcoal; a user-picked background (the
+  // restored "Canvas background" menu item) must render at face value, so
+  // the `mix-blend-mode` only applies while this is still the default.
+  const [canvasBackground, setCanvasBackground] = useState(
+    () => initialSnapshot.appState.viewBackgroundColor,
+  );
   // The first `onChange` after (re)mount carries Excalidraw's own
   // normalised scene. It becomes the saved baseline (see `onChange`)
   // so an untouched file never shows as edited or bumps its version.
@@ -203,6 +214,7 @@ export default function ExcalidrawEditor({
     const nextSnapshot = normalizedSnapshot(loaded.blob as ExcalidrawFileBlob);
     baselinedRef.current = false;
     latestSnapshotRef.current = nextSnapshot;
+    setCanvasBackground(nextSnapshot.appState.viewBackgroundColor);
     thumb.reset();
     lifecycle.reset(loadedVersionRef.current, nextSnapshot.fp);
     // `lifecycle.reset` and `thumb.reset` are stable across renders
@@ -232,6 +244,9 @@ export default function ExcalidrawEditor({
     (elements: readonly ExcalidrawElement[], appState: AppState, files: BinaryFiles) => {
       // Present mode is view-only: nothing it does may reach the save loop.
       setLibraryOpen(appState.openSidebar?.name === "default");
+      // Tracked regardless of write access so a stored custom background
+      // renders at face value in read-only/present views too.
+      setCanvasBackground(appState.viewBackgroundColor);
       if (readOnly || presentingRef.current) return;
       const snap = makeExcalidrawSnapshot(elements, appState, files);
       latestSnapshotRef.current = snap;
@@ -390,11 +405,17 @@ export default function ExcalidrawEditor({
     ],
   );
 
+  const paperBlend = isDefaultCanvasBackground(canvasBackground);
+
   return (
     <div className="flex h-full w-full flex-col">
       {presentation.presenting ? null : renderHeader?.(bridge)}
       <div className="relative min-h-0 w-full flex-1">
-        <div className="absolute inset-0" data-presenting={presentation.presenting}>
+        <div
+          className="absolute inset-0"
+          data-presenting={presentation.presenting}
+          data-canvas-default={paperBlend ? "true" : "false"}
+        >
           <Excalidraw
             excalidrawAPI={receiveApi}
             initialData={initial}
@@ -410,6 +431,10 @@ export default function ExcalidrawEditor({
                 loadScene: false,
                 saveToActiveFile: false,
                 export: { saveFileToDisk: true },
+                // A read-only share without download permission must not
+                // reach the native image-export dialog (⌘⇧E). Owners and
+                // downloadable links keep it.
+                saveAsImage: !(readOnly && !loaded.allowDownload),
                 // Excalidraw auto-disables its built-in `toggleTheme`
                 // action when the host passes a controlled `theme`
                 // prop (we do, so light/dark stays in sync with the
