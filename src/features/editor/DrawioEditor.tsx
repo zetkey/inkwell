@@ -184,10 +184,9 @@ export default function DrawioEditor({
   const lastStyleRef = useRef(drawioStyle);
 
   const post = useCallback((message: Record<string, unknown>) => {
-    // The iframe is sandboxed without `allow-same-origin`, so its origin
-    // is opaque ("null"): a concrete `targetOrigin` would silently drop
-    // every frame. The channel is still scoped to this specific
-    // `contentWindow`, which is also what `onMessage` verifies.
+    // Delivered only to this frame's `contentWindow` — the same window
+    // `onMessage` verifies via `event.source` — so `"*"` cannot leak the
+    // payload to any other frame.
     iframeRef.current?.contentWindow?.postMessage(JSON.stringify(message), "*");
   }, []);
 
@@ -311,10 +310,9 @@ export default function DrawioEditor({
 
   useEffect(() => {
     function onMessage(event: MessageEvent) {
-      // The iframe is sandboxed without `allow-same-origin`, so its
-      // messages arrive with an opaque `"null"` origin. `event.source`
-      // is still the authoritative check; we also accept our own origin
-      // for the unsandboxed/dev case.
+      // The iframe is same-origin, so `event.origin` is our own origin.
+      // `event.source` remains the authoritative check; `"null"` stays
+      // accepted for a sandboxed/embedded deployment.
       if (event.origin !== "null" && event.origin !== window.location.origin) return;
       if (event.source !== iframeRef.current?.contentWindow) return;
       if (typeof event.data !== "string") return;
@@ -581,15 +579,28 @@ export default function DrawioEditor({
       {renderHeader?.(bridge)}
       <div className="relative min-h-0 w-full flex-1">
         {/*
-         * The iframe is served same-origin (`public/drawio`) but runs in
-         * an opaque origin: no `allow-same-origin`, so the vendor bundle
-         * cannot read Inkwell's DOM, storage or cookies. The trade-off
-         * (v1): the custom drawio stylesheet and the in-iframe keyboard
-         * chord forwarder are gone — the header's Save/Export/Present and
-         * the global palette still work, but ⌘S/⌘K typed *inside* the
-         * canvas no longer reach Inkwell. Theme still follows `?dark=`.
-         * `event.origin` is `"null"` under this sandbox; `event.source`
-         * is the authoritative check in `onMessage`.
+         * `allow-same-origin` is required, not optional. draw.io
+         * bootstraps by XHR-loading its own text bundles
+         * (`/drawio/resources/dia.txt`, `editor.txt`, `graph.txt`).
+         * Without it the document's origin is opaque ("null"), every
+         * one of those reads is cross-origin, and the Workers asset
+         * response carries no CORS headers — so the bundle never boots
+         * and draw.io never posts `init`. Same-origin is also what the
+         * parent-side handoff needs: `DrawioSidebarToggles` reads
+         * `contentDocument` and `contentWindow.editorUi` (installed by
+         * `public/drawio-bootstrap.js`), which an opaque origin hides.
+         *
+         * Trade-off: the vendor bundle shares Inkwell's origin, so this
+         * sandbox is not a security boundary. It is third-party code we
+         * ship ourselves from `public/drawio`, like the rest of the SPA
+         * bundle; user-uploaded content is still isolated by the
+         * sandboxing CSP on `/sites/*` and `/shared/*`, never by this
+         * frame. The old `contentDocument` stylesheet injection and
+         * in-iframe keyboard forwarder stay removed: the header owns
+         * Save/Export/Present and the palette, and ⌘S/⌘K typed inside
+         * the canvas still do not reach Inkwell.
+         * `event.origin` is the app origin under this sandbox;
+         * `event.source` is still the authoritative check in `onMessage`.
          */}
         <iframe
           // Remount when the resolved theme OR style changes so drawio
@@ -601,7 +612,7 @@ export default function DrawioEditor({
           title="draw.io editor"
           className="h-full w-full border-0 bg-background"
           allow="clipboard-read; clipboard-write"
-          sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"
+          sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads"
         />
         {ready ? null : (
           <DrawioBootOverlay
