@@ -24,6 +24,31 @@ to babysit, no egress fees.
 > [excalidraw-persist](https://github.com/ozencb/excalidraw-persist), and
 > [excalidraw-full](https://github.com/BetterAndBetterII/excalidraw-full).
 
+## What this fork adds
+
+This repository is a **fork of [Inkwell](https://github.com/ThilinaTLM/inkwell)**
+by ThilinaTLM, which remains the original project and the source of everything
+Inkwell does at its core. This fork ships that app plus:
+
+- **Realtime collaboration** on Excalidraw files: one Durable Object room per
+  file, with share-token guests joining the owner's room.
+- **Uploaded files** (images, PDF, video) with HTTP Range streaming and a
+  per-user storage quota.
+- **Static-site hosting** with a sandboxing CSP, ZIP download, and signed
+  per-asset URLs.
+- **Hardened sharing**: token-gated collab, CSP on share thumbnails, and
+  session-gated owner site URLs.
+- **Editor reliability**: autosave with a 409 conflict pause, save-target
+  guards, and no re-seed after our own save.
+- **Excalidraw parity**: canvas background, search and clear-canvas menu
+  items, with the paper tint applied only to the default background.
+- **draw.io** loads correctly again: the iframe keeps the same-origin sandbox
+  its resource XHRs require.
+- **Tooling and UI**: the TypeScript 7 Go compiler (`tsgo`), upgraded
+  dependencies, and the redesigned explorer/editor shell.
+- **Audit hardening**: D1 parameter chunking, R2 rollback snapshots,
+  JSON/upload caps, and route-level tests.
+
 ## Why this exists
 
 The free Excalidraw web app keeps your drawings in browser local storage —
