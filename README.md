@@ -49,6 +49,15 @@ Inkwell does at its core. This fork ships that app plus:
 - **Audit hardening**: D1 parameter chunking, R2 rollback snapshots,
   JSON/upload caps, and route-level tests.
 
+### Upstream credit
+
+The explorer/editor redesign this fork builds on comes from
+[PR #46 — “UI redesign: new design system, shell, pages and editors”](https://github.com/ThilinaTLM/inkwell/pull/46)
+by [ThilinaTLM](https://github.com/ThilinaTLM). Upstream
+[Inkwell](https://github.com/ThilinaTLM/inkwell) remains the original project;
+this fork only adds the collaboration, upload, static-site, sharing and
+reliability work listed above.
+
 ## Why this exists
 
 The free Excalidraw web app keeps your drawings in browser local storage —
